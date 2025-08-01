@@ -475,9 +475,9 @@ def click(
         )
     if shift:
         with pyautogui.hold('shift'):
-            pyautogui.click(target_x, target_y, duration=duration)
+            pyautogui.click()
     else:
-        pyautogui.click(target_x, target_y, duration=duration)
+        pyautogui.click()
 
 
 def get_mouse_coordinates(verbose=False):
