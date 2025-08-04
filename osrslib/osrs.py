@@ -141,7 +141,7 @@ class RegionHSV:
         return contours, frame, mask
 
 
-    def configure_interactively(self):
+    def configure(self):
         """
         Opens a GUI to allow real-time adjustment of the screen region and HSV values.
         
@@ -175,7 +175,7 @@ class RegionHSV:
             print("Configuration complete. Ready to detect objects.")
 
 
-    def get_object_centers(self) -> list[tuple[int, int]]:
+    def get_centers(self) -> list[tuple[int, int]]:
         """
         Finds all objects matching the HSV criteria in the region and returns their centers.
 
