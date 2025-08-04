@@ -78,10 +78,11 @@ class RegionHSV:
         self.centers = []
 
 
-    def _create_trackbars(self):
+    def _create_trackbars(self, width, height):
         """Creates a window with trackbars for adjusting parameters."""
         cv2.namedWindow(TRACKBAR_WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
-        cv2.resizeWindow(TRACKBAR_WINDOW_NAME, 400, 480)
+        cv2.setWindowProperty(TRACKBAR_WINDOW_NAME, cv2.WND_PROP_TOPMOST, 1)
+        cv2.resizeWindow(TRACKBAR_WINDOW_NAME, width, height)
 
         # Create trackbars for region
         cv2.createTrackbar('Left', TRACKBAR_WINDOW_NAME, self.left, self.screen_width, lambda x: None)
@@ -141,13 +142,16 @@ class RegionHSV:
         return contours, frame, mask
 
 
-    def configure(self):
+    def configure(self, window_width=500, window_height=380):
         """
         Opens a GUI to allow real-time adjustment of the screen region and HSV values.
         
         Press 'q' to close the windows and save the settings.
+
+        :param window_width: Determines the trackbar window width.
+        :param window_height: Determines the trackbar window height.
         """
-        self._create_trackbars()
+        self._create_trackbars(width=window_width, height=window_height)
         cv2.namedWindow(CAPTURE_WINDOW_NAME, cv2.WINDOW_NORMAL)
 
         if self.verbose:
