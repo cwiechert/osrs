@@ -402,7 +402,8 @@ class Recorder:
             relative_times = [t - base_time for t in self.times_]
             iteration_times = []
 
-            print(f"Starting playback ({iterations} iteration(s))...")
+            if verbose:
+                print(f"Starting playback ({iterations} iteration(s))...")
             for q in range(iterations):
                 iter_start = time.perf_counter()
                 
@@ -438,8 +439,6 @@ class Recorder:
                         f"Avg={avg_time:.2f}s, "
                         f"Original={orig_duration:.2f}s"
                     )
-
-            print(f"Playback completed. Average iteration time: {sum(iteration_times)/len(iteration_times):.2f}s")
 
 
 def click(
