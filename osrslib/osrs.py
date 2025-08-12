@@ -2,7 +2,8 @@ import time
 import os
 import csv
 from random import randint
-from typing import Optional, Union, Tuple
+from typing import Optional, Union, Tuple, Callable
+import threading
 
 import cv2
 import numpy as np
@@ -37,9 +38,9 @@ class RegionHSV:
 
     The intended workflow is:
     1. Instantiate the class.
-    2. (Optional) Call `configure_interactively()` to use a GUI to find the
+    2. (Optional) Call `configure()` to use a GUI to find the
        correct screen region and HSV values.
-    3. Call `get_object_centers()` to get the coordinates of detected objects or
+    3. Call `get_centers()` to get the coordinates of detected objects or
        `draw_centers()` to see the detections in real-time.
     """
 
@@ -77,12 +78,13 @@ class RegionHSV:
         self.upper_bound = np.array([self.hue_max, self.sat_max, self.val_max])
         self.centers = []
 
+        # Concurrent Tasks
+        self.active = None
 
-    def _create_trackbars(self, width, height):
+    def _create_trackbars(self):
         """Creates a window with trackbars for adjusting parameters."""
         cv2.namedWindow(TRACKBAR_WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
-        cv2.setWindowProperty(TRACKBAR_WINDOW_NAME, cv2.WND_PROP_TOPMOST, 1)
-        cv2.resizeWindow(TRACKBAR_WINDOW_NAME, width, height)
+        cv2.resizeWindow(TRACKBAR_WINDOW_NAME, 400, 480)
 
         # Create trackbars for region
         cv2.createTrackbar('Left', TRACKBAR_WINDOW_NAME, self.left, self.screen_width, lambda x: None)
@@ -127,14 +129,14 @@ class RegionHSV:
         self.height = min(self.height, self.screen_height - self.top)
 
 
-    def _process_frame(self):
+    def _process_frame(self, sct_object):
         """
         Captures a single frame and processes it to find object contours.
         
         Returns:
             A tuple containing (contours, original_frame, hsv_mask).
         """
-        screenshot = self.sct.grab(self.region)
+        screenshot = sct_object.grab(self.region)
         frame = np.array(screenshot)
         hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         mask = cv2.inRange(hsv_frame, self.lower_bound, self.upper_bound)
@@ -142,16 +144,13 @@ class RegionHSV:
         return contours, frame, mask
 
 
-    def configure(self, window_width=500, window_height=380):
+    def configure(self):
         """
         Opens a GUI to allow real-time adjustment of the screen region and HSV values.
         
         Press 'q' to close the windows and save the settings.
-
-        :param window_width: Determines the trackbar window width.
-        :param window_height: Determines the trackbar window height.
         """
-        self._create_trackbars(width=window_width, height=window_height)
+        self._create_trackbars()
         cv2.namedWindow(CAPTURE_WINDOW_NAME, cv2.WINDOW_NORMAL)
 
         if self.verbose:
@@ -165,10 +164,10 @@ class RegionHSV:
             self.lower_bound = np.array([self.hue_min, self.sat_min, self.val_min])
             self.upper_bound = np.array([self.hue_max, self.sat_max, self.val_max])
             
-            _, frame, mask = self._process_frame()
+            _, frame, mask = self._process_frame(sct_object=self.sct)
             result = cv2.bitwise_and(frame, frame, mask=mask)
             
-            cv2.resizeWindow(CAPTURE_WINDOW_NAME, self.width, self.height)
+            cv2.resizeWindow(CAPTURE_WINDOW_NAME, self.region['width'], self.region['height'])
             cv2.imshow(CAPTURE_WINDOW_NAME, result)
             
             if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -179,7 +178,7 @@ class RegionHSV:
             print("Configuration complete. Ready to detect objects.")
 
 
-    def get_centers(self) -> list[tuple[int, int]]:
+    def get_centers(self, sct_object) -> list[tuple[int, int]]:
         """
         Finds all objects matching the HSV criteria in the region and returns their centers.
 
@@ -187,7 +186,7 @@ class RegionHSV:
             A list of (x, y) tuples for each object's center. Returns an empty list
             if no objects are found.
         """
-        contours, _, _ = self._process_frame()
+        contours, _, _ = self._process_frame(sct_object=sct_object)
         self.centers = []
         
         for contour in contours:
@@ -218,7 +217,7 @@ class RegionHSV:
             print(f"Displaying real-time detections. Press 'q' in the '{RESULT_WINDOW_NAME}' window to stop.")
 
         while True:
-            contours, frame, mask = self._process_frame()
+            contours, frame, mask = self._process_frame(self.sct)
             display_image = cv2.bitwise_and(frame, frame, mask=mask) if show_hsv_mask else frame
             
             for contour in contours:
@@ -229,15 +228,104 @@ class RegionHSV:
                     cy_local = int(M['m01'] / M['m00'])
                     cv2.circle(display_image, (cx_local, cy_local), 5, (0, 255, 0), -1)
 
-            cv2.resizeWindow(RESULT_WINDOW_NAME, self.width, self.height)
+            cv2.resizeWindow(RESULT_WINDOW_NAME, self.region['width'], self.region['height'])
             cv2.imshow(RESULT_WINDOW_NAME, display_image)
             
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
         
         cv2.destroyAllWindows()
-        
-        
+    
+
+    def _real_time_coordinates(
+            self, 
+            run_event: threading.Event, 
+            stop_event: threading.Event, 
+            refresh_rate: float = 0.1
+            ) -> None:
+            """
+            Continuously fetches object center coordinates in a thread-safe manner.
+            Controlled by threading.Event objects.
+            """
+            # opcion para sacar el promedio de la figura o el indice de la figura
+            verbose_original = self.verbose
+            try:  
+                self.verbose = False
+                with mss() as sct:
+                    while not stop_event.is_set():
+                            run_event.wait()
+                            coordinates = self.get_centers(sct_object=sct)
+                            n = len(coordinates)
+                            x = sum([i[0] for i in coordinates])/n
+                            y = sum([i[1] for i in coordinates])/n
+                            pyautogui.moveTo(x, y, duration=refresh_rate)
+            finally:
+                self.verbose = verbose_original
+
+
+
+    def concurrent_tasks(
+            self, 
+            external_function: Callable[[threading.Event, threading.Event], None]
+            ) -> None:
+        """
+        Runs two functions concurrently and controls them with keyboard input
+        using threading.Event objects for signaling.
+        - Press '+' to pause/resume tasks.
+        - Press '}' to stop tasks and exit.
+
+        external_function EXAMPLE:
+        def t2(run_event, stop_event):
+            while not stop_event.is_set():
+                run_event.wait()
+                print(r.centers) ** FUNCTION TASK **
+                time.sleep(1)
+        """
+        stop_event = threading.Event()
+        run_event = threading.Event()
+        run_event.set()
+
+        self.active = True
+
+        def on_press(key):
+            try:
+                if key.char == '+':
+                    if run_event.is_set():
+                        run_event.clear()
+                        self.active = not self.active
+                        print("--- TASKS PAUSED ---")
+                    else:
+                        run_event.set()
+                        print("--- TASKS RESUMED ---")
+            except AttributeError:
+                pass
+
+        def on_release(key):
+            try:
+                if key.char == '}':
+                    self.active = False
+                    print("--- STOPPING TASKS ---")
+                    stop_event.set() 
+                    run_event.set()  
+                    return False      
+            except AttributeError:
+                pass
+
+        task1 = threading.Thread(target=self._real_time_coordinates, daemon=True, args=(run_event, stop_event))
+        task2 = threading.Thread(target=external_function, daemon=True, args=(run_event, stop_event))
+
+        print("--- Starting tasks. Press '+' to pause/resume. Press '}' to exit. ---")
+        task1.start()
+        task2.start()
+
+        with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
+            listener.join()
+
+        task1.join(timeout=1)
+        task2.join(timeout=1)
+        print("--- Program finished. ---")
+    
+
     def close(self):
         """Closes any open resources, like the screen capture object."""
         self.sct.close()
