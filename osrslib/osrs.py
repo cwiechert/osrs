@@ -42,7 +42,6 @@ class RegionHSV:
        `draw_centers()` to see the detections in real-time.
     """
 
-
     def __init__(self, verbose: bool = True):
         """
         Initializes the RegionHSV detector.
@@ -100,7 +99,6 @@ class RegionHSV:
         cv2.createTrackbar('Val Min', TRACKBAR_WINDOW_NAME, self.val_min, 255, lambda x: None)
         cv2.createTrackbar('Val Max', TRACKBAR_WINDOW_NAME, self.val_max, 255, lambda x: None)
 
-
     def _update_params_from_trackbars(self):
         """Updates instance parameters based on current trackbar values."""
         try:
@@ -128,7 +126,6 @@ class RegionHSV:
         self.width = min(self.width, self.screen_width - self.left)
         self.height = min(self.height, self.screen_height - self.top)
 
-
     def _process_frame(self, sct_object):
         """
         Captures a single frame and processes it to find object contours.
@@ -142,7 +139,6 @@ class RegionHSV:
         mask = cv2.inRange(hsv_frame, self.lower_bound, self.upper_bound)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         return contours, frame, mask
-
 
     def configure(self):
         """
@@ -177,7 +173,6 @@ class RegionHSV:
         if self.verbose:
             print("Configuration complete. Ready to detect objects.")
 
-
     def get_centers(self, sct_object) -> list[tuple[int, int]]:
         """
         Finds all objects matching the HSV criteria in the region and returns their centers.
@@ -200,7 +195,6 @@ class RegionHSV:
             print(f"Found {len(self.centers)} object(s).")
         
         return self.centers
-
 
     def draw_centers(self, show_hsv_mask: bool = False):
         """
@@ -236,7 +230,6 @@ class RegionHSV:
         
         cv2.destroyAllWindows()
     
-
     def _real_time_coordinates(
             self, 
             run_event: threading.Event, 
@@ -264,7 +257,6 @@ class RegionHSV:
                                 time.sleep(refresh_rate)
             finally:
                 self.verbose = verbose_original
-
 
     def concurrent_tasks(
             self, 
@@ -309,7 +301,6 @@ class RegionHSV:
                 self.run_event.wait()
                 external_function()
 
-
         task1 = threading.Thread(target=self._real_time_coordinates, daemon=True, args=(self.run_event, self.stop_event))
         task2 = threading.Thread(target=_external_function_helper, daemon=True)
 
@@ -324,7 +315,6 @@ class RegionHSV:
         task2.join(timeout=1)
         print("--- Program finished. ---")
     
-
     def kill_concurrency(self):
         """Stops all concurrent tasks and the keyboard listener immediately."""
         if hasattr(self, "stop_event"):
@@ -334,7 +324,6 @@ class RegionHSV:
         if hasattr(self, "listener"):
             self.listener.stop()
         self.active = False
-
 
     def close(self):
         """Closes any open resources, like the screen capture object."""
@@ -374,7 +363,6 @@ class Recorder:
         recorder.reproduce(iterations=3, move_duration=0.2, x_rand=5, y_rand=5)
     '''
     
-
     def __init__(self, record: bool = False, filename: str = 'mouse_record.csv'):
         self.record = record
         self.filename = filename
@@ -385,7 +373,6 @@ class Recorder:
             self.button_ = []
         else:
             self._load_recording()
-
 
     def _load_recording(self) -> None:
         """Load mouse recording data from a CSV file."""
@@ -409,7 +396,6 @@ class Recorder:
         except (ValueError, KeyError) as e:
             raise ValueError(f"Error reading CSV file. It may be malformed. Details: {e}")
 
-
     def on_click(self, x: int, y: int, button, pressed: bool) -> None:
         """Mouse click event handler for recording."""
         if pressed and button in (mouse.Button.left, mouse.Button.right):
@@ -417,12 +403,10 @@ class Recorder:
             self.coordinates_.append((x, y))
             self.button_.append(button.name)
 
-
     def on_press(self, key) -> bool:
         """Keyboard event handler to stop recording."""
         if key == self.stop_key:
             return False
-
 
     def record_and_save(self, stop_key=keyboard.Key.ctrl_l) -> None:
         """
@@ -449,7 +433,6 @@ class Recorder:
         self._save_to_csv()
         print(f"Recording stopped. Saved {len(self.times_)} events to {self.filename}")
 
-
     def _save_to_csv(self) -> None:
         """Save recorded data to a CSV file."""
         if not self.times_:
@@ -467,7 +450,6 @@ class Recorder:
                     'y_axis': self.coordinates_[i][1],
                     'button': self.button_[i]
                 })
-
 
     def reproduce(
             self,
