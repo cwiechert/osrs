@@ -80,6 +80,8 @@ class RegionHSV:
 
         # Concurrent Tasks
         self.active = None
+        self.play_pause = '+'
+        self.stop = '}'
 
     def _create_trackbars(self):
         """Creates a window with trackbars for adjusting parameters."""
@@ -254,77 +256,87 @@ class RegionHSV:
                 with mss() as sct:
                     while not stop_event.is_set():
                             run_event.wait()
-                            coordinates = self.get_centers(sct_object=sct)
-                            n = len(coordinates)
-                            x = sum([i[0] for i in coordinates])/n
-                            y = sum([i[1] for i in coordinates])/n
-                            pyautogui.moveTo(x, y, duration=refresh_rate)
+                            try:
+                                coordinates = self.get_centers(sct_object=sct)
+                                n = len(coordinates)
+                                x = sum([i[0] for i in coordinates])/n
+                                y = sum([i[1] for i in coordinates])/n
+                                pyautogui.moveTo(x, y, duration=refresh_rate)
+                            except Exception:
+                                time.sleep(refresh_rate)
             finally:
                 self.verbose = verbose_original
 
 
-
     def concurrent_tasks(
             self, 
-            external_function: Callable[[threading.Event, threading.Event], None]
+            external_function: Callable[[], None]
             ) -> None:
         """
         Runs two functions concurrently and controls them with keyboard input
         using threading.Event objects for signaling.
-        - Press '+' to pause/resume tasks.
-        - Press '}' to stop tasks and exit.
+        - Press self.play_pause to pause/resume tasks.
+        - Press self.stop to stop tasks and exit.
 
-        external_function EXAMPLE:
-        def t2(run_event, stop_event):
-            while not stop_event.is_set():
-                run_event.wait()
-                print(r.centers) ** FUNCTION TASK **
-                time.sleep(1)
         """
-        stop_event = threading.Event()
-        run_event = threading.Event()
-        run_event.set()
-
+        self.stop_event = threading.Event()
+        self.run_event = threading.Event()
+        self.run_event.set()
         self.active = True
 
         def on_press(key):
             try:
-                if key.char == '+':
-                    if run_event.is_set():
-                        run_event.clear()
+                if key.char == self.play_pause:
+                    if self.run_event.is_set():
+                        self.run_event.clear()
                         self.active = not self.active
                         print("--- TASKS PAUSED ---")
                     else:
-                        run_event.set()
+                        self.run_event.set()
                         print("--- TASKS RESUMED ---")
             except AttributeError:
                 pass
 
         def on_release(key):
             try:
-                if key.char == '}':
-                    self.active = False
+                if key.char == self.stop:
                     print("--- STOPPING TASKS ---")
-                    stop_event.set() 
-                    run_event.set()  
+                    self.kill_concurrency()
                     return False      
             except AttributeError:
                 pass
 
-        task1 = threading.Thread(target=self._real_time_coordinates, daemon=True, args=(run_event, stop_event))
-        task2 = threading.Thread(target=external_function, daemon=True, args=(run_event, stop_event))
+        def _external_function_helper():
+            while not self.stop_event.is_set():
+                self.run_event.wait()
+                external_function()
 
-        print("--- Starting tasks. Press '+' to pause/resume. Press '}' to exit. ---")
+
+        task1 = threading.Thread(target=self._real_time_coordinates, daemon=True, args=(self.run_event, self.stop_event))
+        task2 = threading.Thread(target=_external_function_helper, daemon=True)
+
+        print(f"--- Starting tasks. Press {self.play_pause} to pause/resume. Press {self.stop} to exit. ---")
         task1.start()
         task2.start()
 
-        with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
-            listener.join()
+        with keyboard.Listener(on_press=on_press, on_release=on_release) as self.listener:
+            self.listener.join()
 
         task1.join(timeout=1)
         task2.join(timeout=1)
         print("--- Program finished. ---")
     
+
+    def kill_concurrency(self):
+        """Stops all concurrent tasks and the keyboard listener immediately."""
+        if hasattr(self, "stop_event"):
+            self.stop_event.set()
+        if hasattr(self, "run_event"):
+            self.run_event.set()
+        if hasattr(self, "listener"):
+            self.listener.stop()
+        self.active = False
+
 
     def close(self):
         """Closes any open resources, like the screen capture object."""
