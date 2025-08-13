@@ -1,5 +1,4 @@
 import time
-import os
 import csv
 from random import randint
 from typing import Optional, Union, Tuple, Callable
@@ -7,7 +6,6 @@ import threading
 
 import cv2
 import numpy as np
-import pandas as pd
 import pyautogui
 from mss import mss
 from pynput import keyboard, mouse
@@ -415,7 +413,7 @@ class Recorder:
     def on_click(self, x: int, y: int, button, pressed: bool) -> None:
         """Mouse click event handler for recording."""
         if pressed and button in (mouse.Button.left, mouse.Button.right):
-            self.times_.append(time.time())
+            self.times_.append(time.perf_counter())
             self.coordinates_.append((x, y))
             self.button_.append(button.name)
 
@@ -423,7 +421,7 @@ class Recorder:
     def on_press(self, key) -> bool:
         """Keyboard event handler to stop recording."""
         if key == self.stop_key:
-            return False # Returning False stops the listener
+            return False
 
 
     def record_and_save(self, stop_key=keyboard.Key.ctrl_l) -> None:
@@ -459,17 +457,16 @@ class Recorder:
             return
             
         header = ['timestamps', 'x_axis', 'y_axis', 'button']
-        rows = zip(
-            self.times_, 
-            [pos[0] for pos in self.coordinates_], 
-            [pos[1] for pos in self.coordinates_], 
-            self.button_
-        )
-        
         with open(self.filename, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(header)
-            writer.writerows(rows)
+            writer = csv.DictWriter(f, fieldnames=header)
+            writer.writeheader()
+            for i in range(len(self.times_)):
+                writer.writerow({
+                    'timestamps': self.times_[i],
+                    'x_axis': self.coordinates_[i][0],
+                    'y_axis': self.coordinates_[i][1],
+                    'button': self.button_[i]
+                })
 
 
     def reproduce(
@@ -504,26 +501,32 @@ class Recorder:
 
             if verbose:
                 print(f"Starting playback ({iterations} iteration(s))...")
+
             for q in range(iterations):
                 iter_start = time.perf_counter()
                 
-                for i, (rel_time, (x, y), button) in enumerate(zip(
+                for rel_time, (x, y), button in zip(
                     relative_times, self.coordinates_, self.button_
-                )):
-                    # Calculate when the click should happen
+                ):
+                    # The absolute time this event should happen
                     target_time = iter_start + rel_time
 
-                    # 1. Move the mouse to the target position first
                     rand_x = x + randint(-x_rand, x_rand)
                     rand_y = y + randint(-y_rand, y_rand)
+
+                    # 1. Calculate when the mouse should START moving to arrive on time.
+                    move_start_time = target_time - move_duration
+                    
+                    wait_duration = move_start_time - time.perf_counter()
+                    if wait_duration > 0:
+                        time.sleep(wait_duration)
+                    
                     pyautogui.moveTo(rand_x, rand_y, duration=move_duration)
 
-                    # 2. Now, wait until it's time to perform the click
-                    current_time = time.perf_counter()
-                    if current_time < target_time:
-                        time.sleep(target_time - current_time)
+                    final_wait = target_time - time.perf_counter()
+                    if final_wait > 0:
+                        time.sleep(final_wait)
                     
-                    # 3. Finally, perform the click at the correct time
                     pyautogui.click(button=button)
                 
                 iter_end = time.perf_counter()
