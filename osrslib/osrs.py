@@ -173,7 +173,7 @@ class RegionHSV:
         if self.verbose:
             print("Configuration complete. Ready to detect objects.")
 
-    def get_centers(self, sct_object) -> list[tuple[int, int]]:
+    def get_centers(self, sct_object=None) -> list[tuple[int, int]]:
         """
         Finds all objects matching the HSV criteria in the region and returns their centers.
 
@@ -181,6 +181,8 @@ class RegionHSV:
             A list of (x, y) tuples for each object's center. Returns an empty list
             if no objects are found.
         """
+        if sct_object is None:
+            sct_object = self.sct
         contours, _, _ = self._process_frame(sct_object=sct_object)
         self.centers = []
         
