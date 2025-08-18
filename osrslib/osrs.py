@@ -564,8 +564,9 @@ def click(
         duration=duration
         )
     if shift:
-        with pyautogui.hold('shift'):
-            pyautogui.click()
+        pyautogui.keyDown('shift')
+        pyautogui.click()
+        pyautogui.keyUp('shift')
     else:
         pyautogui.click()
 
