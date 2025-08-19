@@ -86,10 +86,10 @@ class RegionHSV:
         cv2.resizeWindow(TRACKBAR_WINDOW_NAME, 400, 480)
 
         # Create trackbars for region
-        cv2.createTrackbar('Left', TRACKBAR_WINDOW_NAME, self.left, self.screen_width, lambda x: None)
-        cv2.createTrackbar('Top', TRACKBAR_WINDOW_NAME, self.top, self.screen_height, lambda x: None)
-        cv2.createTrackbar('Width', TRACKBAR_WINDOW_NAME, self.width, self.screen_width, lambda x: None)
-        cv2.createTrackbar('Height', TRACKBAR_WINDOW_NAME, self.height, self.screen_height, lambda x: None)
+        cv2.createTrackbar('Left', TRACKBAR_WINDOW_NAME, self.region['left'], self.screen_width, lambda x: None)
+        cv2.createTrackbar('Top', TRACKBAR_WINDOW_NAME, self.region['top'], self.screen_height, lambda x: None)
+        cv2.createTrackbar('Width', TRACKBAR_WINDOW_NAME, self.region['width'], self.screen_width, lambda x: None)
+        cv2.createTrackbar('Height', TRACKBAR_WINDOW_NAME, self.region['height'], self.screen_height, lambda x: None)
         
         # Create trackbars for HSV
         cv2.createTrackbar('Hue Min', TRACKBAR_WINDOW_NAME, self.hue_min, 179, lambda x: None)
@@ -155,7 +155,6 @@ class RegionHSV:
             
         while True:
             self._update_params_from_trackbars()
-            
             self.region = {'left': self.left, 'top': self.top, 'width': self.width, 'height': self.height}
             self.lower_bound = np.array([self.hue_min, self.sat_min, self.val_min])
             self.upper_bound = np.array([self.hue_max, self.sat_max, self.val_max])
@@ -636,6 +635,7 @@ def get_region(verbose: bool = True) -> dict:
     assert width > 0 and height > 0, "Region dimensions must be positive."
         
     region = {'left': left, 'top': top, 'width': width, 'height': height}
+
     return region
 
 
