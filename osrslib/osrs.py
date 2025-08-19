@@ -368,6 +368,7 @@ class Recorder:
     def __init__(self, record: bool = False, filename: str = 'mouse_record.csv'):
         self.record = record
         self.filename = filename
+        self.stop_key = keyboard.Key.ctrl_l
 
         if self.record:
             self.times_ = []
@@ -410,7 +411,7 @@ class Recorder:
         if key == self.stop_key:
             return False
 
-    def record_and_save(self, stop_key=keyboard.Key.ctrl_l) -> None:
+    def record_and_save(self) -> None:
         """
         Start recording mouse events until the specified stop key is pressed.
 
@@ -420,7 +421,6 @@ class Recorder:
             print("Not in recording mode. Instantiate with record=True to record.")
             return
 
-        self.stop_key = stop_key
         print(f"Recording mouse clicks... Press '{self.stop_key}' to stop.")
         
         mouse_listener = mouse.Listener(on_click=self.on_click)
@@ -459,7 +459,7 @@ class Recorder:
             move_duration: float = 0.1,
             x_rand: int = 0,
             y_rand: int = 0,
-            verbose: bool = False
+            verbose: bool = True
         ) -> None:
             """
             Replay recorded mouse events with accurate timing.
@@ -571,7 +571,7 @@ def click(
         pyautogui.click()
 
 
-def get_mouse_coordinates(verbose=False):
+def get_mouse_coordinates(verbose=True) -> Tuple[Optional[int], Optional[int]]:
     '''
     Returns the current mouse (x, y) coordinates after the user presses a Shift key.
     
@@ -595,6 +595,48 @@ def get_mouse_coordinates(verbose=False):
         listener.join()
 
     return coords['x'], coords['y']
+
+
+def get_region(verbose: bool = True) -> dict:
+    """
+    Captures a screen region by recording two Shift key presses.
+    The selection order does not matter.
+
+    Returns:
+        dict: A dictionary with region info: {'left', 'top', 'width', 'height'}.
+    """
+    coordinates = []
+    n = 0
+    if verbose:
+        print("Move your mouse to the first corner of the region and press SHIFT.")
+        print("Move to the opposite corner and press SHIFT again.")
+
+    def on_press(key):
+        """Keyboard event handler to record coordinates."""
+        nonlocal n
+        if key == keyboard.Key.shift or key == keyboard.Key.shift_r:
+            pos = pyautogui.position()
+            coordinates.append(pos)
+            print(f"Corner {n+1} captured")
+            n += 1
+            if n >= 2:
+                return False
+
+    with keyboard.Listener(on_press=on_press) as listener:
+        listener.join()
+        
+    x1, y1 = coordinates[0]
+    x2, y2 = coordinates[1]
+    
+    left = min(x1, x2)
+    top = min(y1, y2)
+    width = abs(x1 - x2)  
+    height = abs(y1 - y2) 
+
+    assert width > 0 and height > 0, "Region dimensions must be positive."
+        
+    region = {'left': left, 'top': top, 'width': width, 'height': height}
+    return region
 
 
 def wait_for_image(
