@@ -31,6 +31,6 @@ scripts/
 *.sqlite
 
 # Environment
-venv/
+.venv/
 env/
 .env
