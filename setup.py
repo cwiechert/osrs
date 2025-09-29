@@ -10,7 +10,6 @@ setup(
     install_requires=requirements,
     description='Funciones útiles para programar en OSRS',
     author='Cristobal Wiechert',
-    author_email='tu_correo@example.com',
     classifiers=[
         'Programming Language :: Python :: 3',
         'License :: OSI Approved :: MIT License',
