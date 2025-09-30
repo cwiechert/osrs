@@ -3,6 +3,7 @@ from .osrs import (
     Recorder,
     click,
     get_mouse_coordinates,
+    get_region,
     wait_for_image
 )
 
@@ -11,5 +12,6 @@ __all__ = [
     "Recorder",
     "click",
     "get_mouse_coordinates",
+    "get_region"
     "wait_for_image"
 ]
