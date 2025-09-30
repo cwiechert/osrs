@@ -12,6 +12,5 @@ setup(
     author='Cristobal Wiechert',
     classifiers=[
         'Programming Language :: Python :: 3',
-        'License :: OSI Approved :: MIT License',
     ],
 )
