@@ -21,95 +21,6 @@ pip install git+https://github.com/cwiechert/osrs.git
 
 ## API Reference
 
-### `RegionHSV`
-
-Detects objects on screen by filtering a region using an HSV color range. Returns the screen coordinates of each detected object.
-
-**Typical workflow:**
-1. Instantiate the class.
-2. Call `configure()` to visually tune the region and HSV values.
-3. Call `get_centers()` to get the (x, y) coordinates of detected objects.
-
-```python
-from osrslib import RegionHSV
-
-detector = RegionHSV()
-
-# Open GUI to set screen region and HSV color range
-detector.configure()
-
-# Get the screen coordinates of all detected objects
-centers = detector.get_centers()
-print(centers)  # [(x1, y1), (x2, y2), ...]
-
-# Close resources when done
-detector.close()
-```
-
-#### Methods
-
-| Method | Description |
-|--------|-------------|
-| `configure()` | Opens a GUI with sliders to set the capture region and HSV range. Press `q` to save and close. |
-| `get_centers()` | Captures one frame, applies the HSV filter, and returns a list of `(x, y)` center coordinates for each detected object. |
-| `draw_centers(show_hsv_mask=False)` | Opens a real-time window showing detections. Press `q` to close. Pass `show_hsv_mask=True` to see the filtered black-and-white view instead of the original frame. |
-| `concurrent_tasks(fn)` | Runs `get_centers` (moving the mouse to the average center) and your `fn` in parallel threads. Press `+` to pause/resume, `}` to stop. |
-| `kill_concurrency()` | Stops all concurrent tasks immediately. |
-| `close()` | Releases the screen capture object and closes any open windows. |
-
-#### Attributes set after `configure()`
-
-| Attribute | Type | Description |
-|-----------|------|-------------|
-| `region` | `dict` | `{'left', 'top', 'width', 'height'}` — the capture area |
-| `lower_bound` | `np.array` | Lower HSV bound `[H, S, V]` |
-| `upper_bound` | `np.array` | Upper HSV bound `[H, S, V]` |
-| `centers` | `list` | Last result from `get_centers()` |
-| `play_pause` | `str` | Key to pause/resume concurrent tasks (default `'+'`) |
-| `stop` | `str` | Key to stop concurrent tasks (default `'}'`) |
-
----
-
-### `Recorder`
-
-Records mouse click events to a CSV file and replays them with accurate timing and optional randomization.
-
-#### Recording
-
-```python
-from osrslib import Recorder
-
-recorder = Recorder(record=True, filename='my_clicks.csv')
-recorder.record_and_save()  # Click around, press Left Ctrl to stop
-```
-
-#### Playback
-
-```python
-from osrslib import Recorder
-
-recorder = Recorder(record=False, filename='my_clicks.csv')
-recorder.reproduce(
-    iterations=5,       # Repeat 5 times
-    move_duration=0.2,  # Seconds to move mouse between points
-    x_rand=3,           # ±3 pixel random offset on X
-    y_rand=3,           # ±3 pixel random offset on Y
-    verbose=True        # Print timing info per iteration
-)
-```
-
-#### `reproduce()` parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `iterations` | `int` | `1` | Number of times to repeat the sequence |
-| `move_duration` | `float` | `0.1` | Seconds for mouse to travel between points |
-| `x_rand` | `int` | `0` | Max random pixel offset on X axis |
-| `y_rand` | `int` | `0` | Max random pixel offset on Y axis |
-| `verbose` | `bool` | `True` | Print actual/average/original timing per iteration |
-
----
-
 ### `click(x, y, ...)`
 
 Moves the mouse to `(x, y)` and clicks. Supports randomization and Shift+click.
@@ -157,6 +68,95 @@ from osrslib import get_region
 region = get_region()
 # {'left': 100, 'top': 200, 'width': 400, 'height': 300}
 ```
+
+---
+
+### `Recorder`
+
+Records mouse click events to a CSV file and replays them with accurate timing and optional randomization.
+
+#### Recording
+
+```python
+from osrslib import Recorder
+
+recorder = Recorder(record=True, filename='my_clicks.csv')
+recorder.record_and_save()  # Click around, press Left Ctrl to stop
+```
+
+#### Playback
+
+```python
+from osrslib import Recorder
+
+recorder = Recorder(record=False, filename='my_clicks.csv')
+recorder.reproduce(
+    iterations=5,       # Repeat 5 times
+    move_duration=0.2,  # Seconds to move mouse between points
+    x_rand=3,           # ±3 pixel random offset on X
+    y_rand=3,           # ±3 pixel random offset on Y
+    verbose=True        # Print timing info per iteration
+)
+```
+
+#### `reproduce()` parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `iterations` | `int` | `1` | Number of times to repeat the sequence |
+| `move_duration` | `float` | `0.1` | Seconds for mouse to travel between points |
+| `x_rand` | `int` | `0` | Max random pixel offset on X axis |
+| `y_rand` | `int` | `0` | Max random pixel offset on Y axis |
+| `verbose` | `bool` | `True` | Print actual/average/original timing per iteration |
+
+---
+
+### `RegionHSV`
+
+Detects objects on screen by filtering a region using an HSV color range. Returns the screen coordinates of each detected object.
+
+**Typical workflow:**
+1. Instantiate the class.
+2. Call `configure()` to visually tune the region and HSV values.
+3. Call `get_centers()` to get the (x, y) coordinates of detected objects.
+
+```python
+from osrslib import RegionHSV
+
+detector = RegionHSV()
+
+# Open GUI to set screen region and HSV color range
+detector.configure()
+
+# Get the screen coordinates of all detected objects
+centers = detector.get_centers()
+print(centers)  # [(x1, y1), (x2, y2), ...]
+
+# Close resources when done
+detector.close()
+```
+
+#### Methods
+
+| Method | Description |
+|--------|-------------|
+| `configure()` | Opens a GUI with sliders to set the capture region and HSV range. Press `q` to save and close. |
+| `get_centers()` | Captures one frame, applies the HSV filter, and returns a list of `(x, y)` center coordinates for each detected object. |
+| `draw_centers(show_hsv_mask=False)` | Opens a real-time window showing detections. Press `q` to close. Pass `show_hsv_mask=True` to see the filtered black-and-white view instead of the original frame. |
+| `concurrent_tasks(fn)` | Runs `get_centers` (moving the mouse to the average center) and your `fn` in parallel threads. Press `+` to pause/resume, `}` to stop. |
+| `kill_concurrency()` | Stops all concurrent tasks immediately. |
+| `close()` | Releases the screen capture object and closes any open windows. |
+
+#### Attributes set after `configure()`
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `region` | `dict` | `{'left', 'top', 'width', 'height'}` — the capture area |
+| `lower_bound` | `np.array` | Lower HSV bound `[H, S, V]` |
+| `upper_bound` | `np.array` | Upper HSV bound `[H, S, V]` |
+| `centers` | `list` | Last result from `get_centers()` |
+| `play_pause` | `str` | Key to pause/resume concurrent tasks (default `'+'`) |
+| `stop` | `str` | Key to stop concurrent tasks (default `'}'`) |
 
 ---
 
