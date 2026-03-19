@@ -42,16 +42,23 @@ class RegionHSV:
        `draw_centers()` to see the detections in real-time.
     """
 
-    def __init__(self, verbose: bool = True):
+    def __init__(
+            self,
+            verbose: bool = True,
+            play_pause_key: str = '+',
+            stop_key: str = '}'
+            ):
         """
         Initializes the RegionHSV detector.
-        
+
         Args:
             verbose (bool): If True, prints status messages to the console.
+            play_pause_key (str): Key to pause/resume concurrent tasks. Defaults to '+'.
+            stop_key (str): Key to stop concurrent tasks. Defaults to '}'.
         """
         self.verbose = verbose
         self.sct = mss()
-        
+
         # Get screen dimensions
         self.screen_width, self.screen_height = pyautogui.size()
 
@@ -69,7 +76,7 @@ class RegionHSV:
         self.sat_max = DEFAULT_SAT_MAX
         self.val_min = DEFAULT_VAL_MIN
         self.val_max = DEFAULT_VAL_MAX
-        
+
         # Main attributes to be configured
         self.lower_bound = np.array([self.hue_min, self.sat_min, self.val_min])
         self.upper_bound = np.array([self.hue_max, self.sat_max, self.val_max])
@@ -77,8 +84,8 @@ class RegionHSV:
 
         # Concurrent Tasks
         self.active = None
-        self.play_pause = '+'
-        self.stop = '}'
+        self.play_pause = play_pause_key
+        self.stop = stop_key
 
     def _create_trackbars(self):
         """Creates a window with trackbars for adjusting parameters."""
@@ -141,34 +148,35 @@ class RegionHSV:
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         return contours, frame, mask
 
-    def configure(self):
+    def configure(self, quit_key: str = 'q'):
         """
         Opens a GUI to allow real-time adjustment of the screen region and HSV values.
-        
-        Press 'q' to close the windows and save the settings.
+
+        Args:
+            quit_key (str): Key to close the window and save settings. Defaults to 'q'.
         """
         self._create_trackbars()
         cv2.namedWindow(CAPTURE_WINDOW_NAME, cv2.WINDOW_NORMAL)
 
         if self.verbose:
             print("Adjust parameters in the 'Trackbars' window.")
-            print(f"Press 'q' in the '{CAPTURE_WINDOW_NAME}' window to finish configuration.")
-            
+            print(f"Press '{quit_key}' in the '{CAPTURE_WINDOW_NAME}' window to finish configuration.")
+
         while True:
             self._update_params_from_trackbars()
             self.region = {'left': self.left, 'top': self.top, 'width': self.width, 'height': self.height}
             self.lower_bound = np.array([self.hue_min, self.sat_min, self.val_min])
             self.upper_bound = np.array([self.hue_max, self.sat_max, self.val_max])
-            
+
             _, frame, mask = self._process_frame(sct_object=self.sct)
             result = cv2.bitwise_and(frame, frame, mask=mask)
-            
+
             cv2.resizeWindow(CAPTURE_WINDOW_NAME, self.region['width'], self.region['height'])
             cv2.imshow(CAPTURE_WINDOW_NAME, result)
-            
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+
+            if cv2.waitKey(1) & 0xFF == ord(quit_key):
                 break
-        
+
         cv2.destroyAllWindows()
         if self.verbose:
             print("Configuration complete. Ready to detect objects.")
@@ -198,19 +206,18 @@ class RegionHSV:
         
         return self.centers
 
-    def draw_centers(self, show_hsv_mask: bool = False):
+    def draw_centers(self, show_hsv_mask: bool = False, quit_key: str = 'q'):
         """
         Displays a real-time feed of the capture region with detected centers drawn on it.
-        
-        Press 'q' to close the window.
-        
+
         Args:
             show_hsv_mask (bool): If True, draws centers on the black-and-white HSV mask.
                                   Otherwise, draws on the original color frame.
+            quit_key (str): Key to close the window. Defaults to 'q'.
         """
         cv2.namedWindow(RESULT_WINDOW_NAME, cv2.WINDOW_NORMAL)
         if self.verbose:
-            print(f"Displaying real-time detections. Press 'q' in the '{RESULT_WINDOW_NAME}' window to stop.")
+            print(f"Displaying real-time detections. Press '{quit_key}' in the '{RESULT_WINDOW_NAME}' window to stop.")
 
         try:
             while True:
@@ -228,7 +235,7 @@ class RegionHSV:
                 cv2.resizeWindow(RESULT_WINDOW_NAME, self.region['width'], self.region['height'])
                 cv2.imshow(RESULT_WINDOW_NAME, display_image)
 
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                if cv2.waitKey(1) & 0xFF == ord(quit_key):
                     break
         finally:
             cv2.destroyAllWindows()
@@ -369,10 +376,15 @@ class Recorder:
         recorder.reproduce(iterations=3, move_duration=0.2, x_rand=5, y_rand=5)
     '''
     
-    def __init__(self, record: bool = False, filename: str = 'mouse_record.csv'):
+    def __init__(
+            self,
+            record: bool = False,
+            filename: str = 'mouse_record.csv',
+            stop_key: keyboard.Key = keyboard.Key.ctrl_l
+            ):
         self.record = record
         self.filename = filename
-        self.stop_key = keyboard.Key.ctrl_l
+        self.stop_key = stop_key
 
         if self.record:
             self.times_ = []
@@ -575,23 +587,27 @@ def click(
         pyautogui.click()
 
 
-def get_mouse_coordinates(verbose=True) -> Tuple[Optional[int], Optional[int]]:
+def get_mouse_coordinates(
+        verbose: bool = True,
+        key: Union[keyboard.Key, Tuple] = (keyboard.Key.shift, keyboard.Key.shift_r)
+        ) -> Tuple[Optional[int], Optional[int]]:
     '''
-    Returns the current mouse (x, y) coordinates after the user presses a Shift key.
-    
-    This function blocks execution until a Shift key is pressed.
+    Returns the current mouse (x, y) coordinates after the user presses the specified key.
 
-    :param verbose: If True, prints instructions to the console (default is False).
+    This function blocks execution until the key is pressed.
+
+    :param verbose: If True, prints instructions to the console.
+    :param key: The key (or tuple of keys) that triggers the capture. Defaults to either Shift key.
     :return: A tuple containing the (x, y) coordinates, or (None, None) if interrupted.
     '''
     if verbose:
         print("Move your mouse to the desired location.")
-        print("Press either SHIFT key to capture the coordinates.")
+        print(f"Press {key} to capture the coordinates.")
 
     coords = {'x': None, 'y': None}
 
-    def on_press(key):
-        if key == keyboard.Key.shift or key == keyboard.Key.shift_r:
+    def on_press(pressed):
+        if pressed == key or (isinstance(key, tuple) and pressed in key):
             coords['x'], coords['y'] = pyautogui.position()
             return False
 
@@ -601,10 +617,17 @@ def get_mouse_coordinates(verbose=True) -> Tuple[Optional[int], Optional[int]]:
     return coords['x'], coords['y']
 
 
-def get_region(verbose: bool = True) -> dict:
+def get_region(
+        verbose: bool = True,
+        key: Union[keyboard.Key, Tuple] = (keyboard.Key.shift, keyboard.Key.shift_r)
+        ) -> dict:
     """
-    Captures a screen region by recording two Shift key presses.
+    Captures a screen region by recording two key presses (the two opposite corners).
     The selection order does not matter.
+
+    Args:
+        verbose (bool): If True, prints instructions to the console.
+        key: The key (or tuple of keys) used to capture each corner. Defaults to either Shift key.
 
     Returns:
         dict: A dictionary with region info: {'left', 'top', 'width', 'height'}.
@@ -612,13 +635,12 @@ def get_region(verbose: bool = True) -> dict:
     coordinates = []
     n = 0
     if verbose:
-        print("Move your mouse to the first corner of the region and press SHIFT.")
-        print("Move to the opposite corner and press SHIFT again.")
+        print(f"Move your mouse to the first corner of the region and press {key}.")
+        print("Move to the opposite corner and press it again.")
 
-    def on_press(key):
-        """Keyboard event handler to record coordinates."""
+    def on_press(pressed):
         nonlocal n
-        if key == keyboard.Key.shift or key == keyboard.Key.shift_r:
+        if pressed == key or (isinstance(key, tuple) and pressed in key):
             pos = pyautogui.position()
             coordinates.append(pos)
             print(f"Corner {n+1} captured")

@@ -45,29 +45,42 @@ click(960, 540, duration=0.4)           # Custom move duration in seconds
 
 ---
 
-### `get_mouse_coordinates(verbose=True)`
+### `get_mouse_coordinates(verbose=True, key=...)`
 
-Blocks until the user presses either Shift key, then returns the current mouse position.
+Blocks until the user presses the specified key, then returns the current mouse position.
 
 ```python
 from osrslib import get_mouse_coordinates
+from pynput import keyboard
 
-x, y = get_mouse_coordinates()
-print(f"Captured: ({x}, {y})")
+x, y = get_mouse_coordinates()                              # Default: either Shift key
+x, y = get_mouse_coordinates(key=keyboard.Key.ctrl_r)      # Custom: Right Ctrl
 ```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `verbose` | `bool` | `True` | Print instructions to the console |
+| `key` | `Key` or `tuple` | `(shift, shift_r)` | Key or tuple of keys that trigger the capture |
 
 ---
 
-### `get_region(verbose=True)`
+### `get_region(verbose=True, key=...)`
 
-Captures a rectangular screen region by recording two Shift key presses (the two opposite corners). Order does not matter.
+Captures a rectangular screen region by recording two key presses (the two opposite corners). Order does not matter.
 
 ```python
 from osrslib import get_region
+from pynput import keyboard
 
-region = get_region()
+region = get_region()                                       # Default: either Shift key
+region = get_region(key=keyboard.Key.ctrl_r)               # Custom: Right Ctrl
 # {'left': 100, 'top': 200, 'width': 400, 'height': 300}
 ```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `verbose` | `bool` | `True` | Print instructions to the console |
+| `key` | `Key` or `tuple` | `(shift, shift_r)` | Key or tuple of keys used to capture each corner |
 
 ---
 
@@ -79,9 +92,11 @@ Records mouse click events to a CSV file and replays them with accurate timing a
 
 ```python
 from osrslib import Recorder
+from pynput import keyboard
 
-recorder = Recorder(record=True, filename='my_clicks.csv')
-recorder.record_and_save()  # Click around, press Left Ctrl to stop
+recorder = Recorder(record=True, filename='my_clicks.csv')              # Default: Left Ctrl to stop
+recorder = Recorder(record=True, stop_key=keyboard.Key.f10)             # Custom: F10 to stop
+recorder.record_and_save()
 ```
 
 #### Playback
@@ -98,6 +113,14 @@ recorder.reproduce(
     verbose=True        # Print timing info per iteration
 )
 ```
+
+#### `__init__` parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `record` | `bool` | `False` | `True` to record, `False` to load and replay |
+| `filename` | `str` | `'mouse_record.csv'` | CSV file to save to or load from |
+| `stop_key` | `keyboard.Key` | `keyboard.Key.ctrl_l` | Key that stops the recording |
 
 #### `reproduce()` parameters
 
@@ -136,14 +159,22 @@ print(centers)  # [(x1, y1), (x2, y2), ...]
 detector.close()
 ```
 
+#### `__init__` parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `verbose` | `bool` | `True` | Print status messages to the console |
+| `play_pause_key` | `str` | `'+'` | Key to pause/resume concurrent tasks |
+| `stop_key` | `str` | `'}'` | Key to stop concurrent tasks |
+
 #### Methods
 
 | Method | Description |
 |--------|-------------|
-| `configure()` | Opens a GUI with sliders to set the capture region and HSV range. Press `q` to save and close. |
+| `configure(quit_key='q')` | Opens a GUI with sliders to set the capture region and HSV range. Press `quit_key` to save and close. |
 | `get_centers()` | Captures one frame, applies the HSV filter, and returns a list of `(x, y)` center coordinates for each detected object. |
-| `draw_centers(show_hsv_mask=False)` | Opens a real-time window showing detections. Press `q` to close. Pass `show_hsv_mask=True` to see the filtered black-and-white view instead of the original frame. |
-| `concurrent_tasks(fn)` | Runs `get_centers` (moving the mouse to the average center) and your `fn` in parallel threads. Press `+` to pause/resume, `}` to stop. |
+| `draw_centers(show_hsv_mask=False, quit_key='q')` | Opens a real-time window showing detections. Press `quit_key` to close. Pass `show_hsv_mask=True` to see the filtered black-and-white view. |
+| `concurrent_tasks(fn)` | Runs `get_centers` (moving the mouse to the average center) and your `fn` in parallel threads. Controlled by `play_pause_key` and `stop_key`. |
 | `kill_concurrency()` | Stops all concurrent tasks immediately. |
 | `close()` | Releases the screen capture object and closes any open windows. |
 
@@ -155,8 +186,6 @@ detector.close()
 | `lower_bound` | `np.array` | Lower HSV bound `[H, S, V]` |
 | `upper_bound` | `np.array` | Upper HSV bound `[H, S, V]` |
 | `centers` | `list` | Last result from `get_centers()` |
-| `play_pause` | `str` | Key to pause/resume concurrent tasks (default `'+'`) |
-| `stop` | `str` | Key to stop concurrent tasks (default `'}'`) |
 
 ---
 
