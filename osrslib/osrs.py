@@ -135,6 +135,7 @@ class RegionHSV:
         """
         screenshot = sct_object.grab(self.region)
         frame = np.array(screenshot)
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
         hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         mask = cv2.inRange(hsv_frame, self.lower_bound, self.upper_bound)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -211,53 +212,56 @@ class RegionHSV:
         if self.verbose:
             print(f"Displaying real-time detections. Press 'q' in the '{RESULT_WINDOW_NAME}' window to stop.")
 
-        while True:
-            contours, frame, mask = self._process_frame(self.sct)
-            display_image = cv2.bitwise_and(frame, frame, mask=mask) if show_hsv_mask else frame
-            
-            for contour in contours:
-                M = cv2.moments(contour)
-                if M['m00'] != 0:
-                    # Coordinates are relative to the smaller frame, not the whole screen
-                    cx_local = int(M['m10'] / M['m00'])
-                    cy_local = int(M['m01'] / M['m00'])
-                    cv2.circle(display_image, (cx_local, cy_local), 5, (0, 255, 0), -1)
+        try:
+            while True:
+                contours, frame, mask = self._process_frame(self.sct)
+                display_image = cv2.bitwise_and(frame, frame, mask=mask) if show_hsv_mask else frame
 
-            cv2.resizeWindow(RESULT_WINDOW_NAME, self.region['width'], self.region['height'])
-            cv2.imshow(RESULT_WINDOW_NAME, display_image)
-            
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-        
-        cv2.destroyAllWindows()
+                for contour in contours:
+                    M = cv2.moments(contour)
+                    if M['m00'] != 0:
+                        # Coordinates are relative to the smaller frame, not the whole screen
+                        cx_local = int(M['m10'] / M['m00'])
+                        cy_local = int(M['m01'] / M['m00'])
+                        cv2.circle(display_image, (cx_local, cy_local), 5, (0, 255, 0), -1)
+
+                cv2.resizeWindow(RESULT_WINDOW_NAME, self.region['width'], self.region['height'])
+                cv2.imshow(RESULT_WINDOW_NAME, display_image)
+
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+        finally:
+            cv2.destroyAllWindows()
     
     def _real_time_coordinates(
-            self, 
-            run_event: threading.Event, 
-            stop_event: threading.Event, 
+            self,
+            run_event: threading.Event,
+            stop_event: threading.Event,
             refresh_rate: float = 0.1
             ) -> None:
-            """
-            Continuously fetches object center coordinates in a thread-safe manner.
-            Controlled by threading.Event objects.
-            """
-            # opcion para sacar el promedio de la figura o el indice de la figura
-            verbose_original = self.verbose
-            try:  
-                self.verbose = False
-                with mss() as sct:
-                    while not stop_event.is_set():
-                            run_event.wait()
-                            try:
-                                coordinates = self.get_centers(sct_object=sct)
-                                n = len(coordinates)
-                                x = sum([i[0] for i in coordinates])/n
-                                y = sum([i[1] for i in coordinates])/n
-                                pyautogui.moveTo(x, y, duration=refresh_rate)
-                            except Exception:
-                                time.sleep(refresh_rate)
-            finally:
-                self.verbose = verbose_original
+        """
+        Continuously fetches object center coordinates in a thread-safe manner.
+        Controlled by threading.Event objects.
+        """
+        verbose_original = self.verbose
+        try:
+            self.verbose = False
+            with mss() as sct:
+                while not stop_event.is_set():
+                    run_event.wait()
+                    try:
+                        coordinates = self.get_centers(sct_object=sct)
+                        n = len(coordinates)
+                        if n == 0:
+                            time.sleep(refresh_rate)
+                            continue
+                        x = sum([i[0] for i in coordinates]) / n
+                        y = sum([i[1] for i in coordinates]) / n
+                        pyautogui.moveTo(x, y, duration=refresh_rate)
+                    except Exception:
+                        time.sleep(refresh_rate)
+        finally:
+            self.verbose = verbose_original
 
     def concurrent_tasks(
             self, 
@@ -280,10 +284,11 @@ class RegionHSV:
                 if key.char == self.play_pause:
                     if self.run_event.is_set():
                         self.run_event.clear()
-                        self.active = not self.active
+                        self.active = False
                         print("--- TASKS PAUSED ---")
                     else:
                         self.run_event.set()
+                        self.active = True
                         print("--- TASKS RESUMED ---")
             except AttributeError:
                 pass
@@ -460,71 +465,71 @@ class Recorder:
             y_rand: int = 0,
             verbose: bool = True
         ) -> None:
-            """
-            Replay recorded mouse events with accurate timing.
-            
-            :param iterations: Number of times to repeat the sequence.
-            :param move_duration: Time in seconds for the mouse to move between points.
-            :param x_rand: Random pixel offset range in the X direction.
-            :param y_rand: Random pixel offset range in the Y direction.
-            :param verbose: If True, prints timing information during playback.
-            """
-            if not self.times_:
-                print("No recording data found to reproduce.")
-                return
-                
-            if iterations < 1:
-                raise ValueError("Iterations must be 1 or greater.")
-            if any(v < 0 for v in (move_duration, x_rand, y_rand)):
-                raise ValueError("Duration and randomization values cannot be negative.")
+        """
+        Replay recorded mouse events with accurate timing.
 
-            base_time = self.times_[0]
-            relative_times = [t - base_time for t in self.times_]
-            iteration_times = []
+        :param iterations: Number of times to repeat the sequence.
+        :param move_duration: Time in seconds for the mouse to move between points.
+        :param x_rand: Random pixel offset range in the X direction.
+        :param y_rand: Random pixel offset range in the Y direction.
+        :param verbose: If True, prints timing information during playback.
+        """
+        if not self.times_:
+            print("No recording data found to reproduce.")
+            return
+
+        if iterations < 1:
+            raise ValueError("Iterations must be 1 or greater.")
+        if any(v < 0 for v in (move_duration, x_rand, y_rand)):
+            raise ValueError("Duration and randomization values cannot be negative.")
+
+        base_time = self.times_[0]
+        relative_times = [t - base_time for t in self.times_]
+        iteration_times = []
+
+        if verbose:
+            print(f"Starting playback ({iterations} iteration(s))...")
+
+        for q in range(iterations):
+            iter_start = time.perf_counter()
+
+            for rel_time, (x, y), button in zip(
+                relative_times, self.coordinates_, self.button_
+            ):
+                # The absolute time this event should happen
+                target_time = iter_start + rel_time
+
+                rand_x = x + randint(-x_rand, x_rand)
+                rand_y = y + randint(-y_rand, y_rand)
+
+                # Calculate when the mouse should START moving to arrive on time.
+                move_start_time = target_time - move_duration
+
+                wait_duration = move_start_time - time.perf_counter()
+                if wait_duration > 0:
+                    time.sleep(wait_duration)
+
+                pyautogui.moveTo(rand_x, rand_y, duration=move_duration)
+
+                final_wait = target_time - time.perf_counter()
+                if final_wait > 0:
+                    time.sleep(final_wait)
+
+                pyautogui.click(button=button)
+
+            iter_end = time.perf_counter()
+            iter_duration = iter_end - iter_start
+            iteration_times.append(iter_duration)
 
             if verbose:
-                print(f"Starting playback ({iterations} iteration(s))...")
-
-            for q in range(iterations):
-                iter_start = time.perf_counter()
-                
-                for rel_time, (x, y), button in zip(
-                    relative_times, self.coordinates_, self.button_
-                ):
-                    # The absolute time this event should happen
-                    target_time = iter_start + rel_time
-
-                    rand_x = x + randint(-x_rand, x_rand)
-                    rand_y = y + randint(-y_rand, y_rand)
-
-                    # 1. Calculate when the mouse should START moving to arrive on time.
-                    move_start_time = target_time - move_duration
-                    
-                    wait_duration = move_start_time - time.perf_counter()
-                    if wait_duration > 0:
-                        time.sleep(wait_duration)
-                    
-                    pyautogui.moveTo(rand_x, rand_y, duration=move_duration)
-
-                    final_wait = target_time - time.perf_counter()
-                    if final_wait > 0:
-                        time.sleep(final_wait)
-                    
-                    pyautogui.click(button=button)
-                
-                iter_end = time.perf_counter()
-                iter_duration = iter_end - iter_start
-                iteration_times.append(iter_duration)
-                
-                if verbose:
-                    avg_time = sum(iteration_times) / len(iteration_times)
-                    orig_duration = relative_times[-1] if relative_times else 0
-                    print(
-                        f"Iteration {q+1}/{iterations}: "
-                        f"Actual={iter_duration:.2f}s, "
-                        f"Avg={avg_time:.2f}s, "
-                        f"Original={orig_duration:.2f}s"
-                    )
+                avg_time = sum(iteration_times) / len(iteration_times)
+                orig_duration = relative_times[-1] if relative_times else 0
+                print(
+                    f"Iteration {q+1}/{iterations}: "
+                    f"Actual={iter_duration:.2f}s, "
+                    f"Avg={avg_time:.2f}s, "
+                    f"Original={orig_duration:.2f}s"
+                )
 
 
 def click(
@@ -632,7 +637,8 @@ def get_region(verbose: bool = True) -> dict:
     width = abs(x1 - x2)  
     height = abs(y1 - y2) 
 
-    assert width > 0 and height > 0, "Region dimensions must be positive."
+    if not (width > 0 and height > 0):
+        raise ValueError("Region dimensions must be positive. Both corners cannot be the same point.")
         
     region = {'left': left, 'top': top, 'width': width, 'height': height}
 
@@ -679,7 +685,7 @@ def wait_for_image(
             raise KeyError(f"Region dictionary is missing a required key: {e}")
 
     start_time = time.time()
-    while time.time() - start_time < timeout:
+    while timeout == 0 or time.time() - start_time < timeout:
         try:
             location = pyautogui.locateOnScreen(
                 needle_image_path,
