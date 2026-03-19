@@ -644,7 +644,8 @@ def wait_for_image(
         region: Optional[dict] = None, 
         appear: bool = True, 
         confidence: float = 0.8, 
-        timeout: int = 10
+        timeout: int = 10,
+        verbose=True
         ) -> Union[Tuple[int, int], bool]:
     """
     Waits for a specified image to appear or disappear within a given screen region.
@@ -697,6 +698,8 @@ def wait_for_image(
                 return True
         
         time.sleep(0.2)
+    
+    if verbose: 
+        print(f"Timeout: Waited {timeout} seconds but the condition was not met.")
         
-    print(f"Timeout: Waited {timeout} seconds but the condition was not met.")
     return False
