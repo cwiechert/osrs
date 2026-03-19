@@ -5,13 +5,7 @@ A Python utility library for automating screen interactions using computer visio
 ## Installation
 
 ```bash
-pip install .
-```
-
-Or in editable mode for development:
-
-```bash
-pip install -e .
+pip install git+https://github.com/cwiechert/osrs.git
 ```
 
 ## Requirements
