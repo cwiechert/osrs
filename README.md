@@ -94,8 +94,12 @@ Records mouse click events to a CSV file and replays them with accurate timing a
 from osrslib import Recorder
 from pynput import keyboard
 
-recorder = Recorder(record=True, filename='my_clicks.csv')              # Default: Left Ctrl to stop
-recorder = Recorder(record=True, stop_key=keyboard.Key.f10)             # Custom: F10 to stop
+# Default: press Left Ctrl to stop recording
+recorder = Recorder(record=True, filename='my_clicks.csv')
+
+# Custom stop key: Right Shift
+recorder = Recorder(record=True, stop_key=keyboard.Key.shift_r)
+
 recorder.record_and_save()
 ```
 
