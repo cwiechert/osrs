@@ -272,7 +272,8 @@ class RegionHSV:
 
     def concurrent_tasks(
             self, 
-            external_function: Callable[[], None]
+            external_function: Callable[[], None],
+            verbose=True
             ) -> None:
         """
         Runs two functions concurrently and controls them with keyboard input
@@ -292,18 +293,21 @@ class RegionHSV:
                     if self.run_event.is_set():
                         self.run_event.clear()
                         self.active = False
-                        print("--- TASKS PAUSED ---")
+                        if verbose:
+                            print("--- TASKS PAUSED ---")
                     else:
                         self.run_event.set()
                         self.active = True
-                        print("--- TASKS RESUMED ---")
+                        if verbose:
+                            print("--- TASKS RESUMED ---")
             except AttributeError:
                 pass
 
         def on_release(key):
             try:
                 if key.char == self.stop:
-                    print("--- STOPPING TASKS ---")
+                    if verbose:
+                        print("--- STOPPING TASKS ---")
                     self.kill_concurrency()
                     return False      
             except AttributeError:
