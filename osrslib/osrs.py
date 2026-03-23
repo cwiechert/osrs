@@ -38,8 +38,6 @@ DEFAULT_VAL_MAX = 255
 
 
 # ── Data Structures ──────────────────────────────────────────────────────────
-
-# ▼ [1.1] Dataclass Region reemplaza el dict suelto y los atributos left/top/width/height
 @dataclass
 class Region:
     """Immutable description of a rectangular screen area."""
@@ -61,8 +59,6 @@ class Region:
         return (self.left, self.top, self.width, self.height)
 
 
-
-# ▼ [1.1] Dataclass HSVRange reemplaza los 6 atributos sueltos + lower_bound/upper_bound
 @dataclass
 class HSVRange:
     """Mutable HSV lower/upper bounds."""
@@ -81,10 +77,8 @@ class HSVRange:
     @property
     def upper(self) -> np.ndarray:
         return np.array([self.hue_max, self.sat_max, self.val_max])
-# ▲ [1.1]
 
 
-# ▼ [1.3] Enum TargetStrategy — antes se promediaban todos los centros sin opción
 class TargetStrategy(Enum):
     """How to choose a single target from multiple detected centers."""
 
@@ -92,7 +86,6 @@ class TargetStrategy(Enum):
     FIRST = auto()       # First contour returned by OpenCV.
     LARGEST = auto()     # Contour with the biggest area.
     CENTROID = auto()    # Average of all centers (original behaviour).
-# ▲ [1.3]
 
 
 # ── RegionHSV ────────────────────────────────────────────────────────────────
@@ -121,8 +114,6 @@ class RegionHSV:
         target_strategy: Strategy for choosing a single point when running
             ``_real_time_coordinates`` with multiple detections.
     """
-    # ▲ [5.1] Docstring unificado estilo Google
-
     def __init__(
         self,
         verbose: bool = True,
@@ -135,12 +126,8 @@ class RegionHSV:
         self._sct = mss()
 
         self.screen_width, self.screen_height = pyautogui.size()
-
-        # ▼ [1.1] Region y HSV como dataclasses en vez de atributos sueltos
         self.region = Region()
         self.hsv = HSVRange()
-        # ▲ [1.1] — antes eran self.left, self.top, ..., self.hue_min, self.hue_max, ...
-        #           más self.lower_bound = np.array([...]) y self.upper_bound = np.array([...])
 
         self.min_contour_area = min_contour_area
 
@@ -153,28 +140,21 @@ class RegionHSV:
         self._lock = threading.Lock()
         self._centers: List[Tuple[int, int]] = []
 
-        # ▼ [4.4] Atributos de threading con prefijo _, inicializados como None
         self._stop_event: Optional[threading.Event] = None
         self._run_event: Optional[threading.Event] = None
         self._listener: Optional[keyboard.Listener] = None
-        # ▲ [4.4] — antes eran self.stop_event, self.run_event, self.listener
-        #           y no se inicializaban hasta concurrent_tasks()
 
-    # ▼ [1.2] Context manager — antes no existía, mss() podía quedar sin cerrar
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
         return False
-    # ▲ [1.2]
 
-    # ▼ [2.2] Property thread-safe para centers — antes era self.centers público mutable
     @property
     def centers(self) -> List[Tuple[int, int]]:
         with self._lock:
             return list(self._centers)
-    # ▲ [2.2]
 
     # ── Internal helpers ─────────────────────────────────────────────────
     def _create_trackbars(self) -> None:
@@ -182,7 +162,6 @@ class RegionHSV:
         cv2.namedWindow(TRACKBAR_WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
         cv2.resizeWindow(TRACKBAR_WINDOW_NAME, 400, 480)
 
-        # ▼ [1.1] Acceso via self.region.left etc. en vez de self.region['left']
         cv2.createTrackbar("Left", TRACKBAR_WINDOW_NAME, self.region.left, self.screen_width, lambda _: None)
         cv2.createTrackbar("Top", TRACKBAR_WINDOW_NAME, self.region.top, self.screen_height, lambda _: None)
         cv2.createTrackbar("Width", TRACKBAR_WINDOW_NAME, self.region.width, self.screen_width, lambda _: None)
@@ -194,7 +173,6 @@ class RegionHSV:
         cv2.createTrackbar("Sat Max", TRACKBAR_WINDOW_NAME, self.hsv.sat_max, 255, lambda _: None)
         cv2.createTrackbar("Val Min", TRACKBAR_WINDOW_NAME, self.hsv.val_min, 255, lambda _: None)
         cv2.createTrackbar("Val Max", TRACKBAR_WINDOW_NAME, self.hsv.val_max, 255, lambda _: None)
-        # ▲ [1.1]
 
     def _update_params_from_trackbars(self) -> None:
         """Reads current trackbar positions into ``self.region`` and ``self.hsv``."""
@@ -220,13 +198,9 @@ class RegionHSV:
             logger.debug("Trackbars closed - keeping last known values.")
             return
 
-        # ▼ [2.1] Escritura atómica bajo lock — antes se escribían atributos uno a uno sin protección
         with self._lock:
             self.region = Region(left, top, width, height)
             self.hsv = HSVRange(hue_min, hue_max, sat_min, sat_max, val_min, val_max)
-        # ▲ [2.1]
-        # Antes: self.left = ..., self.top = ..., etc. (6+ asignaciones sin lock)
-        #        self.lower_bound = np.array([...]), self.upper_bound = np.array([...])
 
     def _process_frame(self, sct_object) -> Tuple[list, np.ndarray, np.ndarray]:
         """
@@ -238,12 +212,10 @@ class RegionHSV:
         Returns:
             A tuple of (contours, original_bgr_frame, binary_mask).
         """
-        # ▼ [2.1] Snapshot atómica de region y HSV bajo lock
         with self._lock:
             region_dict = self.region.as_dict()
             lower = self.hsv.lower
             upper = self.hsv.upper
-        # ▲ [2.1] — antes leía self.region y self.lower_bound directamente sin lock
 
         screenshot = sct_object.grab(region_dict)
         frame = np.array(screenshot)
@@ -252,14 +224,11 @@ class RegionHSV:
         mask = cv2.inRange(hsv_frame, lower, upper)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-        # ▼ [6.1] Filtro de área mínima — antes no existía, todo contorno (incluso 1px) se procesaba
         if self.min_contour_area > 0:
             contours = [c for c in contours if cv2.contourArea(c) >= self.min_contour_area]
-        # ▲ [6.1]
 
         return contours, frame, mask
 
-    # ▼ [1.3] Método nuevo — antes no existía, _real_time_coordinates solo promediaba
     def _select_target(
         self,
         centers: List[Tuple[int, int]],
@@ -297,7 +266,6 @@ class RegionHSV:
         dists = [(cx - mx) ** 2 + (cy - my) ** 2 for cx, cy in centers]
         idx = int(np.argmin(dists))
         return centers[idx]
-    # ▲ [1.3]
 
     # ── Public API ───────────────────────────────────────────────────────
     def configure(self, quit_key: str = "q") -> None:
@@ -311,7 +279,6 @@ class RegionHSV:
         Args:
             quit_key: Key to close the GUI and keep current settings.
         """
-        # ▲ [5.1] Docstring estilo Google
         self._create_trackbars()
         cv2.namedWindow(CAPTURE_WINDOW_NAME, cv2.WINDOW_NORMAL)
 
@@ -448,7 +415,6 @@ class RegionHSV:
                 the colour frame.
             quit_key: Key to close the preview window.
         """
-        # ▲ [5.1] Docstring estilo Google
         cv2.namedWindow(RESULT_WINDOW_NAME, cv2.WINDOW_NORMAL)
         if self.verbose:
             logger.info(
@@ -622,23 +588,19 @@ class RegionHSV:
         task_external.join(timeout=2)
         logger.info("--- Program finished. ---")
 
-        # ▼ [3.1] Re-lanzar excepción del hilo externo en el hilo principal
         if external_error:
             raise RuntimeError(
                 "External function failed during concurrent execution."
             ) from external_error[0]
-        # ▲ [3.1] — antes no existía, el error se perdía
 
     def kill_concurrency(self) -> None:
         """Signals all concurrent tasks to stop immediately."""
-        # ▼ [4.4] Acceso via self._stop_event, self._run_event, self._listener
         if self._stop_event is not None:
             self._stop_event.set()
         if self._run_event is not None:
             self._run_event.set()  # Unblock any .wait() calls.
         if self._listener is not None:
             self._listener.stop()
-        # ▲ [4.4]
         self.active = False
 
     # ── Cleanup ──────────────────────────────────────────────────────────
@@ -653,7 +615,6 @@ class RegionHSV:
 
 # ── Recorder ─────────────────────────────────────────────────────────────────
 
-# ▼ [1.1] Dataclass ClickEvent — antes eran 3 listas paralelas: times_, coordinates_, button_
 @dataclass
 class ClickEvent:
     """A single recorded mouse-click event."""
@@ -662,7 +623,6 @@ class ClickEvent:
     x: int
     y: int
     button: str  # "left" | "right"
-# ▲ [1.1]
 
 
 class Recorder:
@@ -685,8 +645,6 @@ class Recorder:
             rec = Recorder(record=False, filename="clicks.csv")
             rec.reproduce(iterations=3, x_rand=5, y_rand=5)
     """
-    # ▲ [5.1] Docstring estilo Google unificado — antes era estilo Sphinx (:param:)
-
     _CSV_FIELDS = ("timestamps", "x_axis", "y_axis", "button")
 
     def __init__(
@@ -706,7 +664,6 @@ class Recorder:
     # ── Persistence ──────────────────────────────────────────────────────
     def _load_recording(self) -> None:
         """Loads click events from a CSV file into ``self.events``."""
-        # ▲ [5.1] Docstring
         try:
             with open(self.filename, "r", newline="") as fh:
                 reader = csv.DictReader(fh)
@@ -715,7 +672,6 @@ class Recorder:
                     missing = required - set(reader.fieldnames or [])
                     raise ValueError(f"CSV missing required columns: {missing}")
 
-                # ▼ [1.1] Carga como lista de ClickEvent
                 self.events = [
                     ClickEvent(
                         timestamp=float(row["timestamps"]),
@@ -725,7 +681,6 @@ class Recorder:
                     )
                     for row in reader
                 ]
-                # ▲ [1.1] — antes: 3 appends separados a self.times_, self.coordinates_, self.button_
 
         except FileNotFoundError:
             raise FileNotFoundError(f"Recording file '{self.filename}' not found.")
@@ -741,7 +696,6 @@ class Recorder:
         with open(self.filename, "w", newline="") as fh:
             writer = csv.DictWriter(fh, fieldnames=self._CSV_FIELDS)
             writer.writeheader()
-            # ▼ [1.1] Iteración sobre ClickEvent en vez de range(len(self.times_))
             for ev in self.events:
                 writer.writerow(
                     {
@@ -751,13 +705,11 @@ class Recorder:
                         "button": ev.button,
                     }
                 )
-            # ▲ [1.1]
 
     # ── Recording ────────────────────────────────────────────────────────
     def _on_click(self, x: int, y: int, button, pressed: bool) -> None:
         """Mouse listener callback - appends events while recording."""
         if pressed and button in (mouse.Button.left, mouse.Button.right):
-            # ▼ [1.1] Append de ClickEvent en vez de 3 appends separados
             self.events.append(
                 ClickEvent(
                     timestamp=time.perf_counter(),
@@ -766,7 +718,6 @@ class Recorder:
                     button=button.name,
                 )
             )
-            # ▲ [1.1]
 
     def _on_press(self, key) -> Optional[bool]:
         """Keyboard listener callback - returns ``False`` to stop."""
@@ -781,14 +732,10 @@ class Recorder:
         Raises:
             RuntimeError: If called when not in recording mode.
         """
-        # ▲ [5.1] Docstring
-
-        # ▼ [3.2] Excepción en vez de print silencioso
         if not self.record:
             raise RuntimeError(
                 "Not in recording mode. Instantiate with record=True."
             )
-        # ▲ [3.2] — antes: print("Not in recording mode..."); return
 
         logger.info("Recording mouse clicks… Press '%s' to stop.", self.stop_key)
 
@@ -829,8 +776,6 @@ class Recorder:
         Raises:
             ValueError: On invalid parameter values.
         """
-        # ▲ [5.1] Docstring estilo Google
-
         if not self.events:
             logger.warning("No recording data to reproduce.")
             return
@@ -841,11 +786,8 @@ class Recorder:
             raise ValueError("move_duration, x_rand, and y_rand must be >= 0.")
 
         screen_w, screen_h = pyautogui.size()
-
-        # ▼ [1.1] Acceso via ev.timestamp en vez de self.times_[0]
         base_time = self.events[0].timestamp
         relative_times = [ev.timestamp - base_time for ev in self.events]
-        # ▲ [1.1]
 
         iteration_durations: List[float] = []
 
@@ -855,16 +797,11 @@ class Recorder:
         for q in range(iterations):
             iter_start = time.perf_counter()
 
-            # ▼ [1.1] zip sobre relative_times y self.events (ClickEvent) en vez de 3 listas
             for rel_time, ev in zip(relative_times, self.events):
-            # ▲ [1.1] — antes: for rel_time, (x, y), button in zip(relative_times, self.coordinates_, self.button_):
-
                 target_time = iter_start + rel_time
 
-                # ▼ [5.3] _clamp en vez de repetir min(max(...)) inline
                 rand_x = _clamp(ev.x + randint(-x_rand, x_rand), 0, screen_w - 1)
                 rand_y = _clamp(ev.y + randint(-y_rand, y_rand), 0, screen_h - 1)
-                # ▲ [5.3]
 
                 move_start = target_time - move_duration
                 wait = move_start - time.perf_counter()
@@ -897,11 +834,9 @@ class Recorder:
 
 # ── Standalone helpers ───────────────────────────────────────────────────────
 
-# ▼ [5.3] Función helper _clamp extraída — antes la lógica se repetía inline
 def _clamp(value: int, lo: int, hi: int) -> int:
     """Clamps *value* to the inclusive range [lo, hi]."""
     return max(lo, min(value, hi))
-# ▲ [5.3]
 
 
 def click(
@@ -927,7 +862,6 @@ def click(
     Raises:
         ValueError: If the base coordinates are outside the screen.
     """
-    # ▲ [5.1] Docstring estilo Google unificado
     screen_w, screen_h = pyautogui.size()
     if not (0 <= x <= screen_w and 0 <= y <= screen_h):
         raise ValueError(f"Coordinates ({x}, {y}) are outside screen bounds.")
@@ -935,10 +869,8 @@ def click(
     if duration is None:
         duration = randint(30, 50) / 100
 
-    # ▼ [5.3] Usa _clamp — antes: min(max(0, x + ...), screen_width - 1)
     target_x = _clamp(x + randint(-x_rand, x_rand), 0, screen_w - 1)
     target_y = _clamp(y + randint(-y_rand, y_rand), 0, screen_h - 1)
-    # ▲ [5.3]
 
     pyautogui.moveTo(target_x, target_y, duration=duration)
 
@@ -964,11 +896,9 @@ def get_mouse_coordinates(
     Returns:
         ``(x, y)`` coordinates, or ``None`` if the capture fails.
     """
-    # ▲ [5.1] Docstring estilo Google
     if verbose:
         logger.info("Move mouse to the desired location, then press %s.", key)
 
-    # ▼ [4.2] Retorna Optional[Tuple] en vez de (None, None)
     result: List[Optional[Tuple[int, int]]] = [None]
 
     def on_press(pressed):
@@ -980,7 +910,6 @@ def get_mouse_coordinates(
         listener.join()
 
     return result[0]
-    # ▲ [4.2] — antes: return coords['x'], coords['y'] que daba (None, None) → truthy tuple
 
 
 def get_region(
@@ -1000,7 +929,6 @@ def get_region(
     Raises:
         ValueError: If both corners are the same point.
     """
-    # ▲ [5.1] Docstring estilo Google
     corners: list = []
     count = 0
 
