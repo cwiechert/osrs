@@ -498,7 +498,7 @@ class RegionHSV:
                                 cy = int(M["m01"] / M["m00"]) + region_top
                                 centers.append((cx, cy))
                                 areas.append(cv2.contourArea(contour))
-                                
+
                             with self._lock:
                                 self._centers = list(centers)
 
@@ -520,6 +520,7 @@ class RegionHSV:
     def concurrent_tasks(
         self,
         external_function: Callable[[], None],
+        refresh_rate: float = 0.1,
     ) -> None:
         """
         Runs ``_real_time_coordinates`` and *external_function* concurrently.
@@ -584,7 +585,7 @@ class RegionHSV:
         task_detect = threading.Thread(
             target=self._real_time_coordinates,
             daemon=True,
-            args=(self._run_event, self._stop_event),
+            args=(self._run_event, self._stop_event, refresh_rate),
         )
         task_external = threading.Thread(target=_external_wrapper, daemon=True)
 
