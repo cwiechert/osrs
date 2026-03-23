@@ -160,6 +160,11 @@ class RegionHSV:
     def centers(self) -> List[Tuple[int, int]]:
         with self._lock:
             return list(self._centers)
+        
+    @centers.setter
+    def centers(self, value: List[Tuple[int, int]]):
+        with self._lock:
+            self._centers = list(value)
 
     # ── Internal helpers ─────────────────────────────────────────────────
     def _create_trackbars(self) -> None:
