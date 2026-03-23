@@ -19,6 +19,52 @@ pip install git+https://github.com/cwiechert/osrs.git
 
 ---
 
+## Data Types
+
+These dataclasses are used throughout the library.
+
+### `Region`
+
+Represents a rectangular area on screen.
+
+```python
+from osrslib import Region
+
+r = Region(left=0, top=53, width=980, height=1363)
+
+r.left          # 0
+r.as_dict()     # {'left': 0, 'top': 53, 'width': 980, 'height': 1363}
+r.as_tuple()    # (0, 53, 980, 1363)
+```
+
+### `HSVRange`
+
+Encapsulates the lower and upper HSV bounds for color filtering.
+
+```python
+from osrslib import HSVRange
+
+hsv = HSVRange(hue_min=81, hue_max=94, sat_min=250, sat_max=255, val_min=247, val_max=255)
+
+hsv.lower  # np.array([81, 250, 247])
+hsv.upper  # np.array([94, 255, 255])
+```
+
+### `TargetStrategy`
+
+Enum that controls how `RegionHSV` picks a single target when multiple objects are detected.
+
+```python
+from osrslib import TargetStrategy
+
+TargetStrategy.NEAREST   # Closest to current mouse position (default)
+TargetStrategy.FIRST     # First contour returned by OpenCV
+TargetStrategy.LARGEST   # Contour with the biggest area
+TargetStrategy.CENTROID  # Average of all centers
+```
+
+---
+
 ## API Reference
 
 ### `click(x, y, ...)`
@@ -53,14 +99,19 @@ Blocks until the user presses the specified key, then returns the current mouse 
 from osrslib import get_mouse_coordinates
 from pynput import keyboard
 
-x, y = get_mouse_coordinates()                              # Default: either Shift key
-x, y = get_mouse_coordinates(key=keyboard.Key.ctrl_r)      # Custom: Right Ctrl
+coords = get_mouse_coordinates()                              # Default: either Shift key
+coords = get_mouse_coordinates(key=keyboard.Key.ctrl_r)      # Custom: Right Ctrl
+
+if coords:
+    x, y = coords
 ```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `verbose` | `bool` | `True` | Print instructions to the console |
 | `key` | `Key` or `tuple` | `(shift, shift_r)` | Key or tuple of keys that trigger the capture |
+
+**Returns:** `(x, y)` tuple, or `None` if the capture fails.
 
 ---
 
@@ -74,13 +125,18 @@ from pynput import keyboard
 
 region = get_region()                                       # Default: either Shift key
 region = get_region(key=keyboard.Key.ctrl_r)               # Custom: Right Ctrl
-# {'left': 100, 'top': 200, 'width': 400, 'height': 300}
+
+region.left     # 100
+region.width    # 400
+region.as_dict()  # {'left': 100, 'top': 200, 'width': 400, 'height': 300}
 ```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `verbose` | `bool` | `True` | Print instructions to the console |
 | `key` | `Key` or `tuple` | `(shift, shift_r)` | Key or tuple of keys used to capture each corner |
+
+**Returns:** A `Region` dataclass.
 
 ---
 
@@ -142,54 +198,67 @@ recorder.reproduce(
 
 Detects objects on screen by filtering a region using an HSV color range. Returns the screen coordinates of each detected object.
 
+Supports the context manager protocol for automatic resource cleanup.
+
 **Typical workflow:**
-1. Instantiate the class.
-2. Call `configure()` to visually tune the region and HSV values.
-3. Call `get_centers()` to get the (x, y) coordinates of detected objects.
 
 ```python
 from osrslib import RegionHSV
 
-detector = RegionHSV()
+with RegionHSV() as detector:
+    # 1. Open GUI to set screen region and HSV color range
+    detector.configure()
 
-# Open GUI to set screen region and HSV color range
-detector.configure()
+    # 2. Export settings to clipboard for reuse
+    detector.export()
 
-# Get the screen coordinates of all detected objects
-centers = detector.get_centers()
-print(centers)  # [(x1, y1), (x2, y2), ...]
+    # 3. Get the screen coordinates of all detected objects
+    centers = detector.get_centers()
+    print(centers)  # [(x1, y1), (x2, y2), ...]
+```
 
-# Close resources when done
-detector.close()
+**Reusing exported settings** (paste from `export()`):
+
+```python
+from osrslib import RegionHSV, Region, HSVRange
+
+r = RegionHSV(min_contour_area=50)
+r.region = Region(left=0, top=53, width=980, height=1363)
+r.hsv = HSVRange(hue_min=81, hue_max=94, sat_min=250, sat_max=255, val_min=247, val_max=255)
+
+centers = r.get_centers()
 ```
 
 #### `__init__` parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `verbose` | `bool` | `True` | Print status messages to the console |
+| `verbose` | `bool` | `True` | Log status messages |
 | `play_pause_key` | `str` | `'+'` | Key to pause/resume concurrent tasks |
 | `stop_key` | `str` | `'}'` | Key to stop concurrent tasks |
+| `min_contour_area` | `float` | `0.0` | Minimum contour area in px² to count as a detection. Filters out noise. |
+| `target_strategy` | `TargetStrategy` | `NEAREST` | How to pick one target when multiple objects are detected (used by `concurrent_tasks`). |
 
 #### Methods
 
 | Method | Description |
 |--------|-------------|
 | `configure(quit_key='q')` | Opens a GUI with sliders to set the capture region and HSV range. Press `quit_key` to save and close. |
+| `export(var_name='r')` | Copies a paste-ready code snippet with the current region and HSV settings to the clipboard. Returns the snippet as a string. |
 | `get_centers()` | Captures one frame, applies the HSV filter, and returns a list of `(x, y)` center coordinates for each detected object. |
 | `draw_centers(show_hsv_mask=False, quit_key='q')` | Opens a real-time window showing detections. Press `quit_key` to close. Pass `show_hsv_mask=True` to see the filtered black-and-white view. |
-| `concurrent_tasks(fn)` | Runs `get_centers` (moving the mouse to the average center) and your `fn` in parallel threads. Controlled by `play_pause_key` and `stop_key`. |
+| `concurrent_tasks(fn)` | Runs detection (moving the mouse to a target chosen by `target_strategy`) and your `fn` in parallel threads. Controlled by `play_pause_key` and `stop_key`. |
 | `kill_concurrency()` | Stops all concurrent tasks immediately. |
-| `close()` | Releases the screen capture object and closes any open windows. |
+| `close()` | Stops concurrent tasks, releases the screen capture object, and closes any open windows. Called automatically when using `with`. |
 
-#### Attributes set after `configure()`
+#### Attributes
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `region` | `dict` | `{'left', 'top', 'width', 'height'}` — the capture area |
-| `lower_bound` | `np.array` | Lower HSV bound `[H, S, V]` |
-| `upper_bound` | `np.array` | Upper HSV bound `[H, S, V]` |
-| `centers` | `list` | Last result from `get_centers()` |
+| `region` | `Region` | The capture area. Set via `configure()` or manually. |
+| `hsv` | `HSVRange` | The HSV filter bounds. Set via `configure()` or manually. |
+| `centers` | `list` | Last result from `get_centers()`. Thread-safe (returns a copy). |
+| `active` | `bool \| None` | `True` if concurrent tasks are running, `False` if paused/stopped, `None` before first run. |
 
 ---
 
@@ -200,32 +269,35 @@ Waits for a reference image to appear or disappear on screen. Useful for waiting
 ```python
 from osrslib import wait_for_image
 
-# Wait for image to appear (returns center coordinates or False on timeout)
+# Wait for image to appear (returns center coordinates or None on timeout)
 result = wait_for_image('images/bank.png', region=region, appear=True, timeout=15)
 if result:
     x, y = result
     print(f"Found at ({x}, {y})")
 
-# Wait for image to disappear (returns True when gone, False on timeout)
+# Wait for image to disappear (returns (0.0, 0.0) when gone, None on timeout)
 gone = wait_for_image('images/loading.png', appear=False, timeout=30)
 
 # Run indefinitely until found (timeout=0)
 result = wait_for_image('images/enemy.png', timeout=0)
+
+# Custom poll speed for fast-changing content
+result = wait_for_image('images/flash.png', poll_interval=0.05)
 ```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `needle_image_path` | `str` | required | Path to the reference image |
-| `region` | `dict` | `None` | Search area `{'left', 'top', 'width', 'height'}`. Searches full screen if `None`. |
+| `region` | `Region`, `dict`, or `None` | `None` | Search area. Accepts a `Region` dataclass or a dict with `left`, `top`, `width`, `height`. Searches full screen if `None`. |
 | `appear` | `bool` | `True` | `True` waits for the image to appear, `False` waits for it to disappear |
 | `confidence` | `float` | `0.8` | Match confidence threshold (0.0–1.0) |
-| `timeout` | `int` | `10` | Max seconds to wait. `0` runs indefinitely. |
-| `verbose` | `bool` | `True` | Print a message if timeout is reached |
+| `timeout` | `float` | `10` | Max seconds to wait. `0` runs indefinitely. |
+| `poll_interval` | `float` | `0.2` | Seconds between screen captures |
 
 **Returns:**
 - `(x, y)` — center of matched image if `appear=True` and found
-- `True` — if `appear=False` and image disappeared
-- `False` — if timeout was reached
+- `(0.0, 0.0)` — if `appear=False` and image disappeared (truthy sentinel)
+- `None` — if timeout was reached
 
 ---
 

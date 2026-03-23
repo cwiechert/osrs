@@ -1,8 +1,13 @@
-import time
 import csv
-from random import randint
-from typing import Optional, Union, Tuple, Callable
+import logging
+import platform
+import subprocess
+import time
 import threading
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from random import randint
+from typing import Optional, Union, Tuple, Callable, List
 
 import cv2
 import numpy as np
@@ -10,18 +15,20 @@ import pyautogui
 from mss import mss
 from pynput import keyboard, mouse
 
-# Window Names
-TRACKBAR_WINDOW_NAME = 'Trackbars'
-CAPTURE_WINDOW_NAME = 'Screen Capture'
-RESULT_WINDOW_NAME = 'Detection Result'
 
-# Default Region Values
+# ── Logging ──────────────────────────────────────────────────────────────────
+logger = logging.getLogger(__name__)
+
+# ── Constants ────────────────────────────────────────────────────────────────
+TRACKBAR_WINDOW_NAME = "Trackbars"
+CAPTURE_WINDOW_NAME = "Screen Capture"
+RESULT_WINDOW_NAME = "Detection Result"
+
 DEFAULT_LEFT = 0
 DEFAULT_TOP = 0
 DEFAULT_WIDTH = 300
 DEFAULT_HEIGHT = 200
 
-# Default HSV Values
 DEFAULT_HUE_MIN = 0
 DEFAULT_HUE_MAX = 179
 DEFAULT_SAT_MIN = 0
@@ -30,500 +37,839 @@ DEFAULT_VAL_MIN = 0
 DEFAULT_VAL_MAX = 255
 
 
+# ── Data Structures ──────────────────────────────────────────────────────────
+
+# ▼ [1.1] Dataclass Region reemplaza el dict suelto y los atributos left/top/width/height
+@dataclass
+class Region:
+    """Immutable description of a rectangular screen area."""
+
+    left: int = DEFAULT_LEFT
+    top: int = DEFAULT_TOP
+    width: int = DEFAULT_WIDTH
+    height: int = DEFAULT_HEIGHT
+
+    def as_dict(self) -> dict:
+        return {
+            "left": self.left,
+            "top": self.top,
+            "width": self.width,
+            "height": self.height,
+        }
+
+    def as_tuple(self) -> Tuple[int, int, int, int]:
+        return (self.left, self.top, self.width, self.height)
+
+
+
+# ▼ [1.1] Dataclass HSVRange reemplaza los 6 atributos sueltos + lower_bound/upper_bound
+@dataclass
+class HSVRange:
+    """Mutable HSV lower/upper bounds."""
+
+    hue_min: int = DEFAULT_HUE_MIN
+    hue_max: int = DEFAULT_HUE_MAX
+    sat_min: int = DEFAULT_SAT_MIN
+    sat_max: int = DEFAULT_SAT_MAX
+    val_min: int = DEFAULT_VAL_MIN
+    val_max: int = DEFAULT_VAL_MAX
+
+    @property
+    def lower(self) -> np.ndarray:
+        return np.array([self.hue_min, self.sat_min, self.val_min])
+
+    @property
+    def upper(self) -> np.ndarray:
+        return np.array([self.hue_max, self.sat_max, self.val_max])
+# ▲ [1.1]
+
+
+# ▼ [1.3] Enum TargetStrategy — antes se promediaban todos los centros sin opción
+class TargetStrategy(Enum):
+    """How to choose a single target from multiple detected centers."""
+
+    NEAREST = auto()     # Closest to current mouse position.
+    FIRST = auto()       # First contour returned by OpenCV.
+    LARGEST = auto()     # Contour with the biggest area.
+    CENTROID = auto()    # Average of all centers (original behaviour).
+# ▲ [1.3]
+
+
+# ── RegionHSV ────────────────────────────────────────────────────────────────
 class RegionHSV:
     """
-    Detects objects within a specified screen region based on a range of HSV color values.
+    Detects objects within a screen region based on HSV color filtering.
 
-    The intended workflow is:
-    1. Instantiate the class.
-    2. (Optional) Call `configure()` to use a GUI to find the
-       correct screen region and HSV values.
-    3. Call `get_centers()` to get the coordinates of detected objects or
-       `draw_centers()` to see the detections in real-time.
+    Workflow:
+        1. Instantiate the class.
+        2. (Optional) Call ``configure()`` to interactively tune region & HSV.
+        3. Call ``get_centers()`` for coordinates or ``draw_centers()`` for a
+           live preview.
+
+    Supports the context-manager protocol::
+
+        with RegionHSV() as detector:
+            detector.configure()
+            centers = detector.get_centers()
+
+    Args:
+        verbose: If ``True``, log status messages.
+        play_pause_key: Key character to pause/resume concurrent tasks.
+        stop_key: Key character to stop concurrent tasks.
+        min_contour_area: Minimum contour area (px²) to consider a detection.
+            Contours smaller than this are treated as noise and ignored.
+        target_strategy: Strategy for choosing a single point when running
+            ``_real_time_coordinates`` with multiple detections.
     """
+    # ▲ [5.1] Docstring unificado estilo Google
 
     def __init__(
-            self,
-            verbose: bool = True,
-            play_pause_key: str = '+',
-            stop_key: str = '}'
-            ):
-        """
-        Initializes the RegionHSV detector.
-
-        Args:
-            verbose (bool): If True, prints status messages to the console.
-            play_pause_key (str): Key to pause/resume concurrent tasks. Defaults to '+'.
-            stop_key (str): Key to stop concurrent tasks. Defaults to '}'.
-        """
+        self,
+        verbose: bool = True,
+        play_pause_key: str = "+",
+        stop_key: str = "}",
+        min_contour_area: float = 0.0,
+        target_strategy: TargetStrategy = TargetStrategy.NEAREST,
+    ):
         self.verbose = verbose
-        self.sct = mss()
+        self._sct = mss()
 
-        # Get screen dimensions
         self.screen_width, self.screen_height = pyautogui.size()
 
-        # Initialize region parameters
-        self.left = DEFAULT_LEFT
-        self.top = DEFAULT_TOP
-        self.width = DEFAULT_WIDTH
-        self.height = DEFAULT_HEIGHT
-        self.region = {'left': self.left, 'top': self.top, 'width': self.width, 'height': self.height}
+        # ▼ [1.1] Region y HSV como dataclasses en vez de atributos sueltos
+        self.region = Region()
+        self.hsv = HSVRange()
+        # ▲ [1.1] — antes eran self.left, self.top, ..., self.hue_min, self.hue_max, ...
+        #           más self.lower_bound = np.array([...]) y self.upper_bound = np.array([...])
 
-        # Initialize HSV parameters
-        self.hue_min = DEFAULT_HUE_MIN
-        self.hue_max = DEFAULT_HUE_MAX
-        self.sat_min = DEFAULT_SAT_MIN
-        self.sat_max = DEFAULT_SAT_MAX
-        self.val_min = DEFAULT_VAL_MIN
-        self.val_max = DEFAULT_VAL_MAX
+        self.min_contour_area = min_contour_area
 
-        # Main attributes to be configured
-        self.lower_bound = np.array([self.hue_min, self.sat_min, self.val_min])
-        self.upper_bound = np.array([self.hue_max, self.sat_max, self.val_max])
-        self.centers = []
+        # Concurrent-task attributes.
+        self.target_strategy = target_strategy
+        self.play_pause_key = play_pause_key
+        self.stop_key = stop_key
+        self.active: Optional[bool] = None
 
-        # Concurrent Tasks
-        self.active = None
-        self.play_pause = play_pause_key
-        self.stop = stop_key
+        self._lock = threading.Lock()
+        self._centers: List[Tuple[int, int]] = []
 
-    def _create_trackbars(self):
-        """Creates a window with trackbars for adjusting parameters."""
+        # ▼ [4.4] Atributos de threading con prefijo _, inicializados como None
+        self._stop_event: Optional[threading.Event] = None
+        self._run_event: Optional[threading.Event] = None
+        self._listener: Optional[keyboard.Listener] = None
+        # ▲ [4.4] — antes eran self.stop_event, self.run_event, self.listener
+        #           y no se inicializaban hasta concurrent_tasks()
+
+    # ▼ [1.2] Context manager — antes no existía, mss() podía quedar sin cerrar
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+    # ▲ [1.2]
+
+    # ▼ [2.2] Property thread-safe para centers — antes era self.centers público mutable
+    @property
+    def centers(self) -> List[Tuple[int, int]]:
+        with self._lock:
+            return list(self._centers)
+    # ▲ [2.2]
+
+    # ── Internal helpers ─────────────────────────────────────────────────
+    def _create_trackbars(self) -> None:
+        """Creates a window with trackbars for adjusting region & HSV params."""
         cv2.namedWindow(TRACKBAR_WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
         cv2.resizeWindow(TRACKBAR_WINDOW_NAME, 400, 480)
 
-        # Create trackbars for region
-        cv2.createTrackbar('Left', TRACKBAR_WINDOW_NAME, self.region['left'], self.screen_width, lambda x: None)
-        cv2.createTrackbar('Top', TRACKBAR_WINDOW_NAME, self.region['top'], self.screen_height, lambda x: None)
-        cv2.createTrackbar('Width', TRACKBAR_WINDOW_NAME, self.region['width'], self.screen_width, lambda x: None)
-        cv2.createTrackbar('Height', TRACKBAR_WINDOW_NAME, self.region['height'], self.screen_height, lambda x: None)
-        
-        # Create trackbars for HSV
-        cv2.createTrackbar('Hue Min', TRACKBAR_WINDOW_NAME, self.hue_min, 179, lambda x: None)
-        cv2.createTrackbar('Hue Max', TRACKBAR_WINDOW_NAME, self.hue_max, 179, lambda x: None)
-        cv2.createTrackbar('Sat Min', TRACKBAR_WINDOW_NAME, self.sat_min, 255, lambda x: None)
-        cv2.createTrackbar('Sat Max', TRACKBAR_WINDOW_NAME, self.sat_max, 255, lambda x: None)
-        cv2.createTrackbar('Val Min', TRACKBAR_WINDOW_NAME, self.val_min, 255, lambda x: None)
-        cv2.createTrackbar('Val Max', TRACKBAR_WINDOW_NAME, self.val_max, 255, lambda x: None)
+        # ▼ [1.1] Acceso via self.region.left etc. en vez de self.region['left']
+        cv2.createTrackbar("Left", TRACKBAR_WINDOW_NAME, self.region.left, self.screen_width, lambda _: None)
+        cv2.createTrackbar("Top", TRACKBAR_WINDOW_NAME, self.region.top, self.screen_height, lambda _: None)
+        cv2.createTrackbar("Width", TRACKBAR_WINDOW_NAME, self.region.width, self.screen_width, lambda _: None)
+        cv2.createTrackbar("Height", TRACKBAR_WINDOW_NAME, self.region.height, self.screen_height, lambda _: None)
 
-    def _update_params_from_trackbars(self):
-        """Updates instance parameters based on current trackbar values."""
+        cv2.createTrackbar("Hue Min", TRACKBAR_WINDOW_NAME, self.hsv.hue_min, 179, lambda _: None)
+        cv2.createTrackbar("Hue Max", TRACKBAR_WINDOW_NAME, self.hsv.hue_max, 179, lambda _: None)
+        cv2.createTrackbar("Sat Min", TRACKBAR_WINDOW_NAME, self.hsv.sat_min, 255, lambda _: None)
+        cv2.createTrackbar("Sat Max", TRACKBAR_WINDOW_NAME, self.hsv.sat_max, 255, lambda _: None)
+        cv2.createTrackbar("Val Min", TRACKBAR_WINDOW_NAME, self.hsv.val_min, 255, lambda _: None)
+        cv2.createTrackbar("Val Max", TRACKBAR_WINDOW_NAME, self.hsv.val_max, 255, lambda _: None)
+        # ▲ [1.1]
+
+    def _update_params_from_trackbars(self) -> None:
+        """Reads current trackbar positions into ``self.region`` and ``self.hsv``."""
         try:
-            # Update region
-            self.left = cv2.getTrackbarPos('Left', TRACKBAR_WINDOW_NAME)
-            self.top = cv2.getTrackbarPos('Top', TRACKBAR_WINDOW_NAME)
-            self.width = max(1, cv2.getTrackbarPos('Width', TRACKBAR_WINDOW_NAME))
-            self.height = max(1, cv2.getTrackbarPos('Height', TRACKBAR_WINDOW_NAME))
-            
-            # Update HSV
-            self.hue_min = cv2.getTrackbarPos('Hue Min', TRACKBAR_WINDOW_NAME)
-            self.hue_max = cv2.getTrackbarPos('Hue Max', TRACKBAR_WINDOW_NAME)
-            self.sat_min = cv2.getTrackbarPos('Sat Min', TRACKBAR_WINDOW_NAME)
-            self.sat_max = cv2.getTrackbarPos('Sat Max', TRACKBAR_WINDOW_NAME)
-            self.val_min = cv2.getTrackbarPos('Val Min', TRACKBAR_WINDOW_NAME)
-            self.val_max = cv2.getTrackbarPos('Val Max', TRACKBAR_WINDOW_NAME)
+            left = cv2.getTrackbarPos("Left", TRACKBAR_WINDOW_NAME)
+            top = cv2.getTrackbarPos("Top", TRACKBAR_WINDOW_NAME)
+            width = max(1, cv2.getTrackbarPos("Width", TRACKBAR_WINDOW_NAME))
+            height = max(1, cv2.getTrackbarPos("Height", TRACKBAR_WINDOW_NAME))
+
+            # Clamp to screen bounds.
+            left = max(0, min(left, self.screen_width - 1))
+            top = max(0, min(top, self.screen_height - 1))
+            width = min(width, self.screen_width - left)
+            height = min(height, self.screen_height - top)
+
+            hue_min = cv2.getTrackbarPos("Hue Min", TRACKBAR_WINDOW_NAME)
+            hue_max = cv2.getTrackbarPos("Hue Max", TRACKBAR_WINDOW_NAME)
+            sat_min = cv2.getTrackbarPos("Sat Min", TRACKBAR_WINDOW_NAME)
+            sat_max = cv2.getTrackbarPos("Sat Max", TRACKBAR_WINDOW_NAME)
+            val_min = cv2.getTrackbarPos("Val Min", TRACKBAR_WINDOW_NAME)
+            val_max = cv2.getTrackbarPos("Val Max", TRACKBAR_WINDOW_NAME)
         except cv2.error:
-            if self.verbose:
-                print("Trackbars closed. Using last known values.")
+            logger.debug("Trackbars closed - keeping last known values.")
             return
 
-        # Validate region boundaries
-        self.left = max(0, min(self.left, self.screen_width - 1))
-        self.top = max(0, min(self.top, self.screen_height - 1))
-        self.width = min(self.width, self.screen_width - self.left)
-        self.height = min(self.height, self.screen_height - self.top)
+        # ▼ [2.1] Escritura atómica bajo lock — antes se escribían atributos uno a uno sin protección
+        with self._lock:
+            self.region = Region(left, top, width, height)
+            self.hsv = HSVRange(hue_min, hue_max, sat_min, sat_max, val_min, val_max)
+        # ▲ [2.1]
+        # Antes: self.left = ..., self.top = ..., etc. (6+ asignaciones sin lock)
+        #        self.lower_bound = np.array([...]), self.upper_bound = np.array([...])
 
-    def _process_frame(self, sct_object):
+    def _process_frame(self, sct_object) -> Tuple[list, np.ndarray, np.ndarray]:
         """
-        Captures a single frame and processes it to find object contours.
-        
+        Captures a frame from the screen region and returns filtered results.
+
+        Args:
+            sct_object: An ``mss`` instance to capture with.
+
         Returns:
-            A tuple containing (contours, original_frame, hsv_mask).
+            A tuple of (contours, original_bgr_frame, binary_mask).
         """
-        screenshot = sct_object.grab(self.region)
+        # ▼ [2.1] Snapshot atómica de region y HSV bajo lock
+        with self._lock:
+            region_dict = self.region.as_dict()
+            lower = self.hsv.lower
+            upper = self.hsv.upper
+        # ▲ [2.1] — antes leía self.region y self.lower_bound directamente sin lock
+
+        screenshot = sct_object.grab(region_dict)
         frame = np.array(screenshot)
         frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
         hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv_frame, self.lower_bound, self.upper_bound)
+        mask = cv2.inRange(hsv_frame, lower, upper)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        # ▼ [6.1] Filtro de área mínima — antes no existía, todo contorno (incluso 1px) se procesaba
+        if self.min_contour_area > 0:
+            contours = [c for c in contours if cv2.contourArea(c) >= self.min_contour_area]
+        # ▲ [6.1]
+
         return contours, frame, mask
 
-    def configure(self, quit_key: str = 'q'):
+    # ▼ [1.3] Método nuevo — antes no existía, _real_time_coordinates solo promediaba
+    def _select_target(
+        self,
+        centers: List[Tuple[int, int]],
+        areas: List[float],
+    ) -> Optional[Tuple[int, int]]:
         """
-        Opens a GUI to allow real-time adjustment of the screen region and HSV values.
+        Picks one target point from *centers* according to ``self.target_strategy``.
 
         Args:
-            quit_key (str): Key to close the window and save settings. Defaults to 'q'.
+            centers: Detected center coordinates (screen-absolute).
+            areas: Contour areas corresponding to each center.
+
+        Returns:
+            A single (x, y) tuple, or ``None`` if *centers* is empty.
         """
+        if not centers:
+            return None
+
+        strategy = self.target_strategy
+
+        if strategy == TargetStrategy.FIRST:
+            return centers[0]
+
+        if strategy == TargetStrategy.LARGEST:
+            idx = int(np.argmax(areas))
+            return centers[idx]
+
+        if strategy == TargetStrategy.CENTROID:
+            xs = [c[0] for c in centers]
+            ys = [c[1] for c in centers]
+            return (int(np.mean(xs)), int(np.mean(ys)))
+
+        # Default: NEAREST to current mouse position.
+        mx, my = pyautogui.position()
+        dists = [(cx - mx) ** 2 + (cy - my) ** 2 for cx, cy in centers]
+        idx = int(np.argmin(dists))
+        return centers[idx]
+    # ▲ [1.3]
+
+    # ── Public API ───────────────────────────────────────────────────────
+    def configure(self, quit_key: str = "q") -> None:
+        """
+        Opens a GUI for real-time adjustment of the screen region and HSV values.
+
+        The masked result is shown in a preview window.  Adjust sliders until
+        only the target objects are visible, then press *quit_key* to save the
+        current settings and close the windows.
+
+        Args:
+            quit_key: Key to close the GUI and keep current settings.
+        """
+        # ▲ [5.1] Docstring estilo Google
         self._create_trackbars()
         cv2.namedWindow(CAPTURE_WINDOW_NAME, cv2.WINDOW_NORMAL)
 
         if self.verbose:
-            print("Adjust parameters in the 'Trackbars' window.")
-            print(f"Press '{quit_key}' in the '{CAPTURE_WINDOW_NAME}' window to finish configuration.")
-
-        while True:
-            self._update_params_from_trackbars()
-            self.region = {'left': self.left, 'top': self.top, 'width': self.width, 'height': self.height}
-            self.lower_bound = np.array([self.hue_min, self.sat_min, self.val_min])
-            self.upper_bound = np.array([self.hue_max, self.sat_max, self.val_max])
-
-            _, frame, mask = self._process_frame(sct_object=self.sct)
-            result = cv2.bitwise_and(frame, frame, mask=mask)
-
-            cv2.resizeWindow(CAPTURE_WINDOW_NAME, self.region['width'], self.region['height'])
-            cv2.imshow(CAPTURE_WINDOW_NAME, result)
-
-            if cv2.waitKey(1) & 0xFF == ord(quit_key):
-                break
-
-        cv2.destroyAllWindows()
-        if self.verbose:
-            print("Configuration complete. Ready to detect objects.")
-
-    def get_centers(self, sct_object=None) -> list[tuple[int, int]]:
-        """
-        Finds all objects matching the HSV criteria in the region and returns their centers.
-
-        Returns:
-            A list of (x, y) tuples for each object's center. Returns an empty list
-            if no objects are found.
-        """
-        if sct_object is None:
-            sct_object = self.sct
-        contours, _, _ = self._process_frame(sct_object=sct_object)
-        self.centers = []
-        
-        for contour in contours:
-            M = cv2.moments(contour)
-            if M['m00'] != 0:
-                cx = int(M['m10'] / M['m00']) + self.region['left']
-                cy = int(M['m01'] / M['m00']) + self.region['top']
-                self.centers.append((cx, cy))
-        
-        if self.verbose:
-            print(f"Found {len(self.centers)} object(s).")
-        
-        return self.centers
-
-    def draw_centers(self, show_hsv_mask: bool = False, quit_key: str = 'q'):
-        """
-        Displays a real-time feed of the capture region with detected centers drawn on it.
-
-        Args:
-            show_hsv_mask (bool): If True, draws centers on the black-and-white HSV mask.
-                                  Otherwise, draws on the original color frame.
-            quit_key (str): Key to close the window. Defaults to 'q'.
-        """
-        cv2.namedWindow(RESULT_WINDOW_NAME, cv2.WINDOW_NORMAL)
-        if self.verbose:
-            print(f"Displaying real-time detections. Press '{quit_key}' in the '{RESULT_WINDOW_NAME}' window to stop.")
+            logger.info(
+                "Adjust parameters in '%s'. Press '%s' in '%s' to finish.",
+                TRACKBAR_WINDOW_NAME,
+                quit_key,
+                CAPTURE_WINDOW_NAME,
+            )
 
         try:
             while True:
-                contours, frame, mask = self._process_frame(self.sct)
-                display_image = cv2.bitwise_and(frame, frame, mask=mask) if show_hsv_mask else frame
+                self._update_params_from_trackbars()
+                _, frame, mask = self._process_frame(self._sct)
+                result = cv2.bitwise_and(frame, frame, mask=mask)
 
-                for contour in contours:
-                    M = cv2.moments(contour)
-                    if M['m00'] != 0:
-                        # Coordinates are relative to the smaller frame, not the whole screen
-                        cx_local = int(M['m10'] / M['m00'])
-                        cy_local = int(M['m01'] / M['m00'])
-                        cv2.circle(display_image, (cx_local, cy_local), 5, (0, 255, 0), -1)
+                with self._lock:
+                    w, h = self.region.width, self.region.height
 
-                cv2.resizeWindow(RESULT_WINDOW_NAME, self.region['width'], self.region['height'])
-                cv2.imshow(RESULT_WINDOW_NAME, display_image)
+                cv2.resizeWindow(CAPTURE_WINDOW_NAME, w, h)
+                cv2.imshow(CAPTURE_WINDOW_NAME, result)
 
                 if cv2.waitKey(1) & 0xFF == ord(quit_key):
                     break
         finally:
             cv2.destroyAllWindows()
-    
-    def _real_time_coordinates(
-            self,
-            run_event: threading.Event,
-            stop_event: threading.Event,
-            refresh_rate: float = 0.1
-            ) -> None:
+
+        if self.verbose:
+            logger.info("Configuration complete. Ready to detect objects.")
+
+    def export(self, var_name: str = "r") -> str:
         """
-        Continuously fetches object center coordinates in a thread-safe manner.
-        Controlled by threading.Event objects.
+        Generates a paste-ready code snippet with the current region and HSV
+        settings and copies it to the system clipboard.
+
+        Ideal after ``configure()``: tune the sliders, press quit, call
+        ``export()``, and paste into another cell or script.
+
+        Args:
+            var_name: Variable name used in the generated code.
+
+        Returns:
+            The generated code string (also copied to clipboard).
         """
-        verbose_original = self.verbose
+        with self._lock:
+            reg = self.region
+            hsv = self.hsv
+            mca = self.min_contour_area
+
+        lines = [
+            f"{var_name} = RegionHSV(min_contour_area={mca})",
+            f"{var_name}.region = Region("
+            f"left={reg.left}, top={reg.top}, "
+            f"width={reg.width}, height={reg.height})",
+            f"{var_name}.hsv = HSVRange("
+            f"hue_min={hsv.hue_min}, hue_max={hsv.hue_max}, "
+            f"sat_min={hsv.sat_min}, sat_max={hsv.sat_max}, "
+            f"val_min={hsv.val_min}, val_max={hsv.val_max})",
+        ]
+        snippet = "\n".join(lines)
+
         try:
-            self.verbose = False
+            system = platform.system()
+            if system == "Darwin":
+                subprocess.run(["pbcopy"], input=snippet.encode(), check=True)
+            elif system == "Linux":
+                subprocess.run(
+                    ["xclip", "-selection", "clipboard"],
+                    input=snippet.encode(),
+                    check=True,
+                )
+            elif system == "Windows":
+                subprocess.run(["clip"], input=snippet.encode(), check=True)
+            else:
+                raise OSError(f"Unsupported platform: {system}")
+
+            if self.verbose:
+                logger.info("Copied to clipboard:\n%s", snippet)
+        except (FileNotFoundError, OSError) as exc:
+            logger.warning(
+                "Could not copy to clipboard (%s). Code printed below:\n%s",
+                exc,
+                snippet,
+            )
+
+        return snippet
+
+    def get_centers(
+        self,
+        sct_object=None,
+    ) -> List[Tuple[int, int]]:
+        """
+        Returns screen-absolute center coordinates of every detected object.
+
+        Args:
+            sct_object: Optional ``mss`` instance.  A default is used when
+                ``None``.
+
+        Returns:
+            A list of (x, y) tuples.  Empty when nothing is found.
+        """
+        if sct_object is None:
+            sct_object = self._sct
+
+        contours, _, _ = self._process_frame(sct_object)
+
+        with self._lock:
+            region_left = self.region.left
+            region_top = self.region.top
+
+        centers: List[Tuple[int, int]] = []
+        for contour in contours:
+            M = cv2.moments(contour)
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"]) + region_left
+                cy = int(M["m01"] / M["m00"]) + region_top
+                centers.append((cx, cy))
+
+        with self._lock:
+            self._centers = list(centers)
+
+        if self.verbose:
+            logger.info("Found %d object(s).", len(centers))
+
+        return centers
+
+    def draw_centers(self, show_hsv_mask: bool = False, quit_key: str = "q") -> None:
+        """
+        Displays a live feed with detected centers drawn as green circles.
+
+        Args:
+            show_hsv_mask: When ``True``, draws on the binary mask instead of
+                the colour frame.
+            quit_key: Key to close the preview window.
+        """
+        # ▲ [5.1] Docstring estilo Google
+        cv2.namedWindow(RESULT_WINDOW_NAME, cv2.WINDOW_NORMAL)
+        if self.verbose:
+            logger.info(
+                "Displaying detections. Press '%s' in '%s' to stop.",
+                quit_key,
+                RESULT_WINDOW_NAME,
+            )
+
+        try:
+            while True:
+                contours, frame, mask = self._process_frame(self._sct)
+                display = cv2.bitwise_and(frame, frame, mask=mask) if show_hsv_mask else frame
+
+                for contour in contours:
+                    M = cv2.moments(contour)
+                    if M["m00"] != 0:
+                        cx_local = int(M["m10"] / M["m00"])
+                        cy_local = int(M["m01"] / M["m00"])
+                        cv2.circle(display, (cx_local, cy_local), 5, (0, 255, 0), -1)
+
+                with self._lock:
+                    w, h = self.region.width, self.region.height
+
+                cv2.resizeWindow(RESULT_WINDOW_NAME, w, h)
+                cv2.imshow(RESULT_WINDOW_NAME, display)
+
+                if cv2.waitKey(1) & 0xFF == ord(quit_key):
+                    break
+        finally:
+            cv2.destroyAllWindows()
+
+    # ── Concurrency ──────────────────────────────────────────────────────
+    def _real_time_coordinates(
+        self,
+        run_event: threading.Event,
+        stop_event: threading.Event,
+        refresh_rate: float = 0.1,
+    ) -> None:
+        """
+        Continuously moves the mouse towards detected objects.
+
+        Runs inside a daemon thread.  The target is chosen using
+        ``self.target_strategy``.
+
+        Args:
+            run_event: Cleared to pause, set to resume.
+            stop_event: Set to terminate the loop.
+            refresh_rate: Seconds between capture cycles.
+        """
+        try:
             with mss() as sct:
                 while not stop_event.is_set():
                     run_event.wait()
+
+                    if stop_event.is_set():
+                        break
+
                     try:
-                        coordinates = self.get_centers(sct_object=sct)
-                        n = len(coordinates)
-                        if n == 0:
+                        contours, _, _ = self._process_frame(sct)
+
+                        with self._lock:
+                            region_left = self.region.left
+                            region_top = self.region.top
+
+                        centers: List[Tuple[int, int]] = []
+                        areas: List[float] = []
+                        for contour in contours:
+                            M = cv2.moments(contour)
+                            if M["m00"] != 0:
+                                cx = int(M["m10"] / M["m00"]) + region_left
+                                cy = int(M["m01"] / M["m00"]) + region_top
+                                centers.append((cx, cy))
+                                areas.append(cv2.contourArea(contour))
+
+                        target = self._select_target(centers, areas)
+
+                        if target is None:
                             time.sleep(refresh_rate)
                             continue
-                        x = sum([i[0] for i in coordinates]) / n
-                        y = sum([i[1] for i in coordinates]) / n
-                        pyautogui.moveTo(x, y, duration=refresh_rate)
+
+                        pyautogui.moveTo(target[0], target[1], duration=refresh_rate)
                     except Exception:
+                        logger.exception("Error in _real_time_coordinates loop.")
                         time.sleep(refresh_rate)
-        finally:
-            self.verbose = verbose_original
+        except Exception:
+            logger.exception("Fatal error in _real_time_coordinates thread.")
 
     def concurrent_tasks(
-            self, 
-            external_function: Callable[[], None],
-            verbose=True
-            ) -> None:
+        self,
+        external_function: Callable[[], None],
+    ) -> None:
         """
-        Runs two functions concurrently and controls them with keyboard input
-        using threading.Event objects for signaling.
-        - Press self.play_pause to pause/resume tasks.
-        - Press self.stop to stop tasks and exit.
+        Runs ``_real_time_coordinates`` and *external_function* concurrently.
 
+        Keyboard controls (configurable via constructor):
+            * ``play_pause_key`` - toggle pause / resume.
+            * ``stop_key`` - stop everything and return.
+
+        Args:
+            external_function: A no-arg callable executed in a loop alongside
+                the detection thread.
+
+        Raises:
+            RuntimeError: If *external_function* raises while running.
         """
-        self.stop_event = threading.Event()
-        self.run_event = threading.Event()
-        self.run_event.set()
+
+        self._stop_event = threading.Event()
+        self._run_event = threading.Event()
+        self._run_event.set()
         self.active = True
+
+        external_error: List[BaseException] = []
 
         def on_press(key):
             try:
-                if key.char == self.play_pause:
-                    if self.run_event.is_set():
-                        self.run_event.clear()
+                if key.char == self.play_pause_key:
+                    if self._run_event.is_set():
+                        self._run_event.clear()
                         self.active = False
-                        if verbose:
-                            print("--- TASKS PAUSED ---")
+                        if self.verbose:
+                            logger.info("--- TASKS PAUSED ---")
                     else:
-                        self.run_event.set()
+                        self._run_event.set()
                         self.active = True
-                        if verbose:
-                            print("--- TASKS RESUMED ---")
+                        if self.verbose:
+                            logger.info("--- TASKS RESUMED ---")
             except AttributeError:
                 pass
 
         def on_release(key):
             try:
-                if key.char == self.stop:
-                    if verbose:
-                        print("--- STOPPING TASKS ---")
+                if key.char == self.stop_key:
+                    if self.verbose:
+                        logger.info("--- STOPPING TASKS ---")
                     self.kill_concurrency()
-                    return False      
+                    return False
             except AttributeError:
                 pass
 
-        def _external_function_helper():
-            while not self.stop_event.is_set():
-                self.run_event.wait()
-                external_function()
+        def _external_wrapper():
+            try:
+                while not self._stop_event.is_set():
+                    self._run_event.wait()
+                    if self._stop_event.is_set():
+                        break
+                    external_function()
+            except Exception as exc:
+                external_error.append(exc)
+                logger.exception("External function raised an exception - stopping tasks.")
+                self.kill_concurrency()
 
-        task1 = threading.Thread(target=self._real_time_coordinates, daemon=True, args=(self.run_event, self.stop_event))
-        task2 = threading.Thread(target=_external_function_helper, daemon=True)
+        task_detect = threading.Thread(
+            target=self._real_time_coordinates,
+            daemon=True,
+            args=(self._run_event, self._stop_event),
+        )
+        task_external = threading.Thread(target=_external_wrapper, daemon=True)
 
-        print(f"--- Starting tasks. Press {self.play_pause} to pause/resume. Press {self.stop} to exit. ---")
-        task1.start()
-        task2.start()
+        logger.info(
+            "Starting tasks. Press '%s' to pause/resume. Press '%s' to exit.",
+            self.play_pause_key,
+            self.stop_key,
+        )
+        task_detect.start()
+        task_external.start()
 
-        with keyboard.Listener(on_press=on_press, on_release=on_release) as self.listener:
-            self.listener.join()
+        with keyboard.Listener(on_press=on_press, on_release=on_release) as self._listener:
+            self._listener.join()
 
-        task1.join(timeout=1)
-        task2.join(timeout=1)
-        print("--- Program finished. ---")
-    
-    def kill_concurrency(self):
-        """Stops all concurrent tasks and the keyboard listener immediately."""
-        if hasattr(self, "stop_event"):
-            self.stop_event.set()
-        if hasattr(self, "run_event"):
-            self.run_event.set()
-        if hasattr(self, "listener"):
-            self.listener.stop()
+        task_detect.join(timeout=2)
+        task_external.join(timeout=2)
+        logger.info("--- Program finished. ---")
+
+        # ▼ [3.1] Re-lanzar excepción del hilo externo en el hilo principal
+        if external_error:
+            raise RuntimeError(
+                "External function failed during concurrent execution."
+            ) from external_error[0]
+        # ▲ [3.1] — antes no existía, el error se perdía
+
+    def kill_concurrency(self) -> None:
+        """Signals all concurrent tasks to stop immediately."""
+        # ▼ [4.4] Acceso via self._stop_event, self._run_event, self._listener
+        if self._stop_event is not None:
+            self._stop_event.set()
+        if self._run_event is not None:
+            self._run_event.set()  # Unblock any .wait() calls.
+        if self._listener is not None:
+            self._listener.stop()
+        # ▲ [4.4]
         self.active = False
 
-    def close(self):
-        """Closes any open resources, like the screen capture object."""
-        self.sct.close()
+    # ── Cleanup ──────────────────────────────────────────────────────────
+    def close(self) -> None:
+        """Releases the screen-capture handle and destroys OpenCV windows."""
+        self.kill_concurrency()
+        self._sct.close()
         cv2.destroyAllWindows()
         if self.verbose:
-            print("RegionHSV resources closed.")
+            logger.info("RegionHSV resources closed.")
+
+
+# ── Recorder ─────────────────────────────────────────────────────────────────
+
+# ▼ [1.1] Dataclass ClickEvent — antes eran 3 listas paralelas: times_, coordinates_, button_
+@dataclass
+class ClickEvent:
+    """A single recorded mouse-click event."""
+
+    timestamp: float
+    x: int
+    y: int
+    button: str  # "left" | "right"
+# ▲ [1.1]
 
 
 class Recorder:
-    '''
-    A class to record and reproduce mouse click actions on the screen.
+    """
+    Records and replays mouse-click sequences with precise timing.
 
-    This class allows users to:
-    - Record mouse click events (coordinates, timestamps, button).
-    - Save the recorded data to a CSV file.
-    - Reproduce the recorded clicks with proper timing and optional randomization.
+    Args:
+        record: ``True`` to start in recording mode; ``False`` for playback.
+        filename: Path to the CSV file used for saving / loading events.
+        stop_key: Key that terminates the recording session.
 
-    :param record: Boolean flag for recording mode (`True`) or playback mode (`False`). Defaults to `False`.
-    :param filename: Name of the CSV file to save or read data. Defaults to 'mouse_record.csv'.
+    Examples:
+        Recording::
 
-    Attributes:
-    - record (bool): Indicates if the instance is in recording or playback mode.
-    - filename (str): Path to the data file.
-    - times_ (list): Timestamps of mouse click events.
-    - coordinates_ (list): (x, y) screen coordinates for each click.
-    - button_ (list): Mouse button ('left', 'right') used for each click.
+            rec = Recorder(record=True, filename="clicks.csv")
+            rec.record_and_save()
 
-    Usage:
-    - **Recording Mode**: 
-        recorder = Recorder(record=True, filename='my_recording.csv')
-        # To stop, press the Right Shift key instead of the default Left Control
-        recorder.record_and_save(stop_key=keyboard.Key.shift_r)
-        
-    - **Playback Mode**: 
-        recorder = Recorder(record=False, filename='my_recording.csv')
-        recorder.reproduce(iterations=3, move_duration=0.2, x_rand=5, y_rand=5)
-    '''
-    
+        Playback::
+
+            rec = Recorder(record=False, filename="clicks.csv")
+            rec.reproduce(iterations=3, x_rand=5, y_rand=5)
+    """
+    # ▲ [5.1] Docstring estilo Google unificado — antes era estilo Sphinx (:param:)
+
+    _CSV_FIELDS = ("timestamps", "x_axis", "y_axis", "button")
+
     def __init__(
-            self,
-            record: bool = False,
-            filename: str = 'mouse_record.csv',
-            stop_key: keyboard.Key = keyboard.Key.ctrl_l
-            ):
+        self,
+        record: bool = False,
+        filename: str = "mouse_record.csv",
+        stop_key: keyboard.Key = keyboard.Key.ctrl_l,
+    ):
         self.record = record
         self.filename = filename
         self.stop_key = stop_key
+        self.events: List[ClickEvent] = []
 
-        if self.record:
-            self.times_ = []
-            self.coordinates_ = []
-            self.button_ = []
-        else:
+        if not self.record:
             self._load_recording()
 
+    # ── Persistence ──────────────────────────────────────────────────────
     def _load_recording(self) -> None:
-        """Load mouse recording data from a CSV file."""
+        """Loads click events from a CSV file into ``self.events``."""
+        # ▲ [5.1] Docstring
         try:
-            with open(self.filename, 'r', newline='') as f:
-                reader = csv.DictReader(f)
-                required_cols = {'timestamps', 'x_axis', 'y_axis', 'button'}
-                if not required_cols.issubset(reader.fieldnames or []):
-                    missing = required_cols - set(reader.fieldnames or [])
+            with open(self.filename, "r", newline="") as fh:
+                reader = csv.DictReader(fh)
+                required = set(self._CSV_FIELDS)
+                if not required.issubset(reader.fieldnames or []):
+                    missing = required - set(reader.fieldnames or [])
                     raise ValueError(f"CSV missing required columns: {missing}")
 
-                self.times_ = []
-                self.coordinates_ = []
-                self.button_ = []
-                for row in reader:
-                    self.times_.append(float(row['timestamps']))
-                    self.coordinates_.append((int(row['x_axis']), int(row['y_axis'])))
-                    self.button_.append(row['button'])
+                # ▼ [1.1] Carga como lista de ClickEvent
+                self.events = [
+                    ClickEvent(
+                        timestamp=float(row["timestamps"]),
+                        x=int(row["x_axis"]),
+                        y=int(row["y_axis"]),
+                        button=row["button"],
+                    )
+                    for row in reader
+                ]
+                # ▲ [1.1] — antes: 3 appends separados a self.times_, self.coordinates_, self.button_
+
         except FileNotFoundError:
             raise FileNotFoundError(f"Recording file '{self.filename}' not found.")
-        except (ValueError, KeyError) as e:
-            raise ValueError(f"Error reading CSV file. It may be malformed. Details: {e}")
+        except (ValueError, KeyError) as exc:
+            raise ValueError(f"Malformed CSV - {exc}") from exc
 
-    def on_click(self, x: int, y: int, button, pressed: bool) -> None:
-        """Mouse click event handler for recording."""
+    def _save_to_csv(self) -> None:
+        """Persists ``self.events`` to CSV."""
+        if not self.events:
+            logger.warning("No events recorded - CSV not written.")
+            return
+
+        with open(self.filename, "w", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=self._CSV_FIELDS)
+            writer.writeheader()
+            # ▼ [1.1] Iteración sobre ClickEvent en vez de range(len(self.times_))
+            for ev in self.events:
+                writer.writerow(
+                    {
+                        "timestamps": ev.timestamp,
+                        "x_axis": ev.x,
+                        "y_axis": ev.y,
+                        "button": ev.button,
+                    }
+                )
+            # ▲ [1.1]
+
+    # ── Recording ────────────────────────────────────────────────────────
+    def _on_click(self, x: int, y: int, button, pressed: bool) -> None:
+        """Mouse listener callback - appends events while recording."""
         if pressed and button in (mouse.Button.left, mouse.Button.right):
-            self.times_.append(time.perf_counter())
-            self.coordinates_.append((x, y))
-            self.button_.append(button.name)
+            # ▼ [1.1] Append de ClickEvent en vez de 3 appends separados
+            self.events.append(
+                ClickEvent(
+                    timestamp=time.perf_counter(),
+                    x=x,
+                    y=y,
+                    button=button.name,
+                )
+            )
+            # ▲ [1.1]
 
-    def on_press(self, key) -> bool:
-        """Keyboard event handler to stop recording."""
+    def _on_press(self, key) -> Optional[bool]:
+        """Keyboard listener callback - returns ``False`` to stop."""
         if key == self.stop_key:
             return False
+        return None
 
     def record_and_save(self) -> None:
         """
-        Start recording mouse events until the specified stop key is pressed.
+        Begins recording mouse clicks until ``self.stop_key`` is pressed.
 
-        :param stop_key: The key to press to stop recording. Defaults to Left Control.
+        Raises:
+            RuntimeError: If called when not in recording mode.
         """
-        if not self.record:
-            print("Not in recording mode. Instantiate with record=True to record.")
-            return
+        # ▲ [5.1] Docstring
 
-        print(f"Recording mouse clicks... Press '{self.stop_key}' to stop.")
-        
-        mouse_listener = mouse.Listener(on_click=self.on_click)
-        keyboard_listener = keyboard.Listener(on_press=self.on_press)
+        # ▼ [3.2] Excepción en vez de print silencioso
+        if not self.record:
+            raise RuntimeError(
+                "Not in recording mode. Instantiate with record=True."
+            )
+        # ▲ [3.2] — antes: print("Not in recording mode..."); return
+
+        logger.info("Recording mouse clicks… Press '%s' to stop.", self.stop_key)
+
+        mouse_listener = mouse.Listener(on_click=self._on_click)
+        keyboard_listener = keyboard.Listener(on_press=self._on_press)
 
         mouse_listener.start()
         keyboard_listener.start()
-
         keyboard_listener.join()
         mouse_listener.stop()
-        
+
         self._save_to_csv()
-        print(f"Recording stopped. Saved {len(self.times_)} events to {self.filename}")
+        logger.info(
+            "Recording stopped. Saved %d event(s) to '%s'.",
+            len(self.events),
+            self.filename,
+        )
 
-    def _save_to_csv(self) -> None:
-        """Save recorded data to a CSV file."""
-        if not self.times_:
-            print("No events were recorded. CSV file not created.")
-            return
-            
-        header = ['timestamps', 'x_axis', 'y_axis', 'button']
-        with open(self.filename, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=header)
-            writer.writeheader()
-            for i in range(len(self.times_)):
-                writer.writerow({
-                    'timestamps': self.times_[i],
-                    'x_axis': self.coordinates_[i][0],
-                    'y_axis': self.coordinates_[i][1],
-                    'button': self.button_[i]
-                })
-
+    # ── Playback ─────────────────────────────────────────────────────────
     def reproduce(
-            self,
-            iterations: int = 1,
-            move_duration: float = 0.1,
-            x_rand: int = 0,
-            y_rand: int = 0,
-            verbose: bool = True
-        ) -> None:
+        self,
+        iterations: int = 1,
+        move_duration: float = 0.1,
+        x_rand: int = 0,
+        y_rand: int = 0,
+        verbose: bool = True,
+    ) -> None:
         """
-        Replay recorded mouse events with accurate timing.
+        Replays the recorded click sequence with accurate timing.
 
-        :param iterations: Number of times to repeat the sequence.
-        :param move_duration: Time in seconds for the mouse to move between points.
-        :param x_rand: Random pixel offset range in the X direction.
-        :param y_rand: Random pixel offset range in the Y direction.
-        :param verbose: If True, prints timing information during playback.
+        Args:
+            iterations: How many times to replay the full sequence.
+            move_duration: Seconds the cursor takes to travel between points.
+            x_rand: Maximum random pixel offset on the X axis.
+            y_rand: Maximum random pixel offset on the Y axis.
+            verbose: Print per-iteration timing stats.
+
+        Raises:
+            ValueError: On invalid parameter values.
         """
-        if not self.times_:
-            print("No recording data found to reproduce.")
+        # ▲ [5.1] Docstring estilo Google
+
+        if not self.events:
+            logger.warning("No recording data to reproduce.")
             return
 
         if iterations < 1:
-            raise ValueError("Iterations must be 1 or greater.")
-        if any(v < 0 for v in (move_duration, x_rand, y_rand)):
-            raise ValueError("Duration and randomization values cannot be negative.")
+            raise ValueError("iterations must be >= 1.")
+        if move_duration < 0 or x_rand < 0 or y_rand < 0:
+            raise ValueError("move_duration, x_rand, and y_rand must be >= 0.")
 
-        base_time = self.times_[0]
-        relative_times = [t - base_time for t in self.times_]
-        iteration_times = []
+        screen_w, screen_h = pyautogui.size()
+
+        # ▼ [1.1] Acceso via ev.timestamp en vez de self.times_[0]
+        base_time = self.events[0].timestamp
+        relative_times = [ev.timestamp - base_time for ev in self.events]
+        # ▲ [1.1]
+
+        iteration_durations: List[float] = []
 
         if verbose:
-            print(f"Starting playback ({iterations} iteration(s))...")
+            logger.info("Starting playback (%d iteration(s))…", iterations)
 
         for q in range(iterations):
             iter_start = time.perf_counter()
 
-            for rel_time, (x, y), button in zip(
-                relative_times, self.coordinates_, self.button_
-            ):
-                # The absolute time this event should happen
+            # ▼ [1.1] zip sobre relative_times y self.events (ClickEvent) en vez de 3 listas
+            for rel_time, ev in zip(relative_times, self.events):
+            # ▲ [1.1] — antes: for rel_time, (x, y), button in zip(relative_times, self.coordinates_, self.button_):
+
                 target_time = iter_start + rel_time
 
-                rand_x = x + randint(-x_rand, x_rand)
-                rand_y = y + randint(-y_rand, y_rand)
+                # ▼ [5.3] _clamp en vez de repetir min(max(...)) inline
+                rand_x = _clamp(ev.x + randint(-x_rand, x_rand), 0, screen_w - 1)
+                rand_y = _clamp(ev.y + randint(-y_rand, y_rand), 0, screen_h - 1)
+                # ▲ [5.3]
 
-                # Calculate when the mouse should START moving to arrive on time.
-                move_start_time = target_time - move_duration
-
-                wait_duration = move_start_time - time.perf_counter()
-                if wait_duration > 0:
-                    time.sleep(wait_duration)
+                move_start = target_time - move_duration
+                wait = move_start - time.perf_counter()
+                if wait > 0:
+                    time.sleep(wait)
 
                 pyautogui.moveTo(rand_x, rand_y, duration=move_duration)
 
@@ -531,207 +877,230 @@ class Recorder:
                 if final_wait > 0:
                     time.sleep(final_wait)
 
-                pyautogui.click(button=button)
+                pyautogui.click(button=ev.button)
 
-            iter_end = time.perf_counter()
-            iter_duration = iter_end - iter_start
-            iteration_times.append(iter_duration)
+            iter_duration = time.perf_counter() - iter_start
+            iteration_durations.append(iter_duration)
 
             if verbose:
-                avg_time = sum(iteration_times) / len(iteration_times)
-                orig_duration = relative_times[-1] if relative_times else 0
-                print(
-                    f"Iteration {q+1}/{iterations}: "
-                    f"Actual={iter_duration:.2f}s, "
-                    f"Avg={avg_time:.2f}s, "
-                    f"Original={orig_duration:.2f}s"
+                avg = sum(iteration_durations) / len(iteration_durations)
+                orig = relative_times[-1] if relative_times else 0.0
+                logger.info(
+                    "Iteration %d/%d: Actual=%.2fs, Avg=%.2fs, Original=%.2fs",
+                    q + 1,
+                    iterations,
+                    iter_duration,
+                    avg,
+                    orig,
                 )
 
 
-def click(
-        x: int, 
-        y: int, 
-        x_rand: int = 0, 
-        y_rand: int = 0, 
-        shift: bool = False, 
-        duration: float = None
-        ) -> None:
-    '''
-     Simple function to click on a specified (x, y) coordinate on the screen.
-    
-    :param x_: The x-coordinate of the screen where the click will be performed.
-    :param y_: The y-coordinate of the screen where the click will be performed.
-    :param x_rand: The random range to offset the x-coordinate for variability (default is 0, no offset).
-    :param y_rand: The random range to offset the y-coordinate for variability (default is 0, no offset).
-    :param shift: If True, the Shift key will be held down while clicking (default is False).
-    :param duration: The duration it takes to move the cursor to the target coordinates (default is a random value between 0.3 and 0.5 seconds).
-    
-    :return: None
-    '''
-    screen_width, screen_height = pyautogui.size()
-    if not (0 <= x <= screen_width and 0 <= y <= screen_height):
-        raise ValueError(f"Base coordinates ({x}, {y}) are out of screen bounds.")
-    
-    if duration is None:
-        duration = randint(30, 50)/100
-    
-    target_x = min(max(0, x + randint(-x_rand, x_rand)), screen_width - 1)
-    target_y = min(max(0, y + randint(-y_rand, y_rand)), screen_height - 1)
+# ── Standalone helpers ───────────────────────────────────────────────────────
 
-    pyautogui.moveTo(
-        target_x, 
-        target_y, 
-        duration=duration
-        )
+# ▼ [5.3] Función helper _clamp extraída — antes la lógica se repetía inline
+def _clamp(value: int, lo: int, hi: int) -> int:
+    """Clamps *value* to the inclusive range [lo, hi]."""
+    return max(lo, min(value, hi))
+# ▲ [5.3]
+
+
+def click(
+    x: int,
+    y: int,
+    x_rand: int = 0,
+    y_rand: int = 0,
+    shift: bool = False,
+    duration: Optional[float] = None,
+) -> None:
+    """
+    Clicks at screen coordinates with optional randomisation.
+
+    Args:
+        x: Base X coordinate.
+        y: Base Y coordinate.
+        x_rand: Max random pixel offset on the X axis.
+        y_rand: Max random pixel offset on the Y axis.
+        shift: Hold Shift while clicking.
+        duration: Seconds for the cursor movement.  Defaults to a random
+            value between 0.30 and 0.50 s.
+
+    Raises:
+        ValueError: If the base coordinates are outside the screen.
+    """
+    # ▲ [5.1] Docstring estilo Google unificado
+    screen_w, screen_h = pyautogui.size()
+    if not (0 <= x <= screen_w and 0 <= y <= screen_h):
+        raise ValueError(f"Coordinates ({x}, {y}) are outside screen bounds.")
+
+    if duration is None:
+        duration = randint(30, 50) / 100
+
+    # ▼ [5.3] Usa _clamp — antes: min(max(0, x + ...), screen_width - 1)
+    target_x = _clamp(x + randint(-x_rand, x_rand), 0, screen_w - 1)
+    target_y = _clamp(y + randint(-y_rand, y_rand), 0, screen_h - 1)
+    # ▲ [5.3]
+
+    pyautogui.moveTo(target_x, target_y, duration=duration)
+
     if shift:
-        pyautogui.keyDown('shift')
+        pyautogui.keyDown("shift")
         pyautogui.click()
-        pyautogui.keyUp('shift')
+        pyautogui.keyUp("shift")
     else:
         pyautogui.click()
 
 
 def get_mouse_coordinates(
-        verbose: bool = True,
-        key: Union[keyboard.Key, Tuple] = (keyboard.Key.shift, keyboard.Key.shift_r)
-        ) -> Tuple[Optional[int], Optional[int]]:
-    '''
-    Returns the current mouse (x, y) coordinates after the user presses the specified key.
+    verbose: bool = True,
+    key: Union[keyboard.Key, Tuple] = (keyboard.Key.shift, keyboard.Key.shift_r),
+) -> Optional[Tuple[int, int]]:
+    """
+    Blocks until the user presses *key*, then returns the mouse position.
 
-    This function blocks execution until the key is pressed.
+    Args:
+        verbose: Print instructions.
+        key: Key (or tuple of keys) that triggers the capture.
 
-    :param verbose: If True, prints instructions to the console.
-    :param key: The key (or tuple of keys) that triggers the capture. Defaults to either Shift key.
-    :return: A tuple containing the (x, y) coordinates, or (None, None) if interrupted.
-    '''
+    Returns:
+        ``(x, y)`` coordinates, or ``None`` if the capture fails.
+    """
+    # ▲ [5.1] Docstring estilo Google
     if verbose:
-        print("Move your mouse to the desired location.")
-        print(f"Press {key} to capture the coordinates.")
+        logger.info("Move mouse to the desired location, then press %s.", key)
 
-    coords = {'x': None, 'y': None}
+    # ▼ [4.2] Retorna Optional[Tuple] en vez de (None, None)
+    result: List[Optional[Tuple[int, int]]] = [None]
 
     def on_press(pressed):
         if pressed == key or (isinstance(key, tuple) and pressed in key):
-            coords['x'], coords['y'] = pyautogui.position()
+            result[0] = pyautogui.position()
             return False
 
     with keyboard.Listener(on_press=on_press) as listener:
         listener.join()
 
-    return coords['x'], coords['y']
+    return result[0]
+    # ▲ [4.2] — antes: return coords['x'], coords['y'] que daba (None, None) → truthy tuple
 
 
 def get_region(
-        verbose: bool = True,
-        key: Union[keyboard.Key, Tuple] = (keyboard.Key.shift, keyboard.Key.shift_r)
-        ) -> dict:
+    verbose: bool = True,
+    key: Union[keyboard.Key, Tuple] = (keyboard.Key.shift, keyboard.Key.shift_r),
+) -> Region:
     """
-    Captures a screen region by recording two key presses (the two opposite corners).
-    The selection order does not matter.
+    Captures a screen region by recording two opposite corners via key presses.
 
     Args:
-        verbose (bool): If True, prints instructions to the console.
-        key: The key (or tuple of keys) used to capture each corner. Defaults to either Shift key.
+        verbose: Print instructions.
+        key: Key (or tuple of keys) used to capture each corner.
 
     Returns:
-        dict: A dictionary with region info: {'left', 'top', 'width', 'height'}.
+        A ``Region`` dataclass.
+
+    Raises:
+        ValueError: If both corners are the same point.
     """
-    coordinates = []
-    n = 0
+    # ▲ [5.1] Docstring estilo Google
+    corners: list = []
+    count = 0
+
     if verbose:
-        print(f"Move your mouse to the first corner of the region and press {key}.")
-        print("Move to the opposite corner and press it again.")
+        logger.info("Press %s at the first corner, then at the opposite corner.", key)
 
     def on_press(pressed):
-        nonlocal n
+        nonlocal count
         if pressed == key or (isinstance(key, tuple) and pressed in key):
             pos = pyautogui.position()
-            coordinates.append(pos)
-            print(f"Corner {n+1} captured")
-            n += 1
-            if n >= 2:
+            corners.append(pos)
+            count += 1
+            logger.info("Corner %d captured.", count)
+            if count >= 2:
                 return False
 
     with keyboard.Listener(on_press=on_press) as listener:
         listener.join()
-        
-    x1, y1 = coordinates[0]
-    x2, y2 = coordinates[1]
-    
+
+    x1, y1 = corners[0]
+    x2, y2 = corners[1]
+
     left = min(x1, x2)
     top = min(y1, y2)
-    width = abs(x1 - x2)  
-    height = abs(y1 - y2) 
+    width = abs(x1 - x2)
+    height = abs(y1 - y2)
 
-    if not (width > 0 and height > 0):
-        raise ValueError("Region dimensions must be positive. Both corners cannot be the same point.")
-        
-    region = {'left': left, 'top': top, 'width': width, 'height': height}
+    if width == 0 or height == 0:
+        raise ValueError("Region dimensions must be positive - corners cannot overlap.")
 
-    return region
+    return Region(left, top, width, height)
 
 
 def wait_for_image(
-        needle_image_path: str, 
-        region: Optional[dict] = None, 
-        appear: bool = True, 
-        confidence: float = 0.8, 
-        timeout: int = 10,
-        verbose=True
-        ) -> Union[Tuple[int, int], bool]:
+    needle_image_path: str,
+    region: Optional[Union[dict, Region]] = None,
+    appear: bool = True,
+    confidence: float = 0.8,
+    timeout: float = 10,
+    poll_interval: float = 0.2,
+) -> Optional[Tuple[float, float]]:
     """
-    Waits for a specified image to appear or disappear within a given screen region.
+    Waits for an image to appear or disappear on screen.
 
-    :param needle_image_path: The file path of the image to search for.
-    :param region: A tuple (left, top, width, height) defining the search area.
-                   If None, searches the entire screen.
-    :param appear: If True, waits for the image to appear. If False, waits for it to disappear.
-                   Defaults to True.
-    :param confidence: The confidence level for matching (0.0 to 1.0). Defaults to 0.8.
-    :param timeout: Maximum time in seconds to wait. If 0, runs indefinitely. Defaults to 10.
-    
-    :return: 
-        - Tuple (x, y): Center coordinates of the image if it appeared.
-        - True: If the image successfully disappeared.
-        - False: If the timeout was reached.
+    Args:
+        needle_image_path: Path to the template image file.
+        region: Search area as a ``Region`` instance or a dict with keys
+            ``left``, ``top``, ``width``, ``height``.  ``None`` searches the
+            entire screen.
+        appear: ``True`` to wait for the image to *appear*; ``False`` to wait
+            for it to *disappear*.
+        confidence: Match confidence threshold (0.0 - 1.0).
+        timeout: Maximum seconds to wait.  ``0`` means wait indefinitely.
+        poll_interval: Seconds between screen captures.
+
+    Returns:
+        ``(center_x, center_y)`` when the image appeared, or ``None`` if the
+        timeout expired.  When *appear* is ``False``, returns ``(0.0, 0.0)``
+        as a truthy sentinel once the image has gone.
     """
-    if region is not None and not isinstance(region, dict):
-        raise TypeError("Region parameter must be a dictionary or None.")
-                        
-    search_region = None
-    if region:
-        try:
-            search_region = (
-                region['left'], 
-                region['top'], 
-                region['width'], 
-                region['height']
-            )
-        except KeyError as e:
-            raise KeyError(f"Region dictionary is missing a required key: {e}")
+    search_region: Optional[Tuple[int, int, int, int]] = None
 
-    start_time = time.time()
-    while timeout == 0 or time.time() - start_time < timeout:
+    if region is not None:
+        if isinstance(region, Region):
+            search_region = region.as_tuple()
+        elif isinstance(region, dict):
+            try:
+                search_region = (
+                    region["left"],
+                    region["top"],
+                    region["width"],
+                    region["height"],
+                )
+            except KeyError as exc:
+                raise KeyError(f"Region dict missing required key: {exc}") from exc
+        else:
+            raise TypeError("region must be a Region, dict, or None.")
+
+    start = time.monotonic()
+
+    while timeout == 0 or (time.monotonic() - start) < timeout:
         try:
             location = pyautogui.locateOnScreen(
                 needle_image_path,
                 region=search_region,
-                confidence=confidence
+                confidence=confidence,
             )
-
             if appear and location:
-                return (
-                    location.left + location.width / 2, # X axis center
-                    location.top + location.height / 2 # Y axis center
-                )
-
+                cx = location.left + location.width / 2
+                cy = location.top + location.height / 2
+                return (cx, cy)
         except pyautogui.ImageNotFoundException:
             if not appear:
-                return True
-        
-        time.sleep(0.2)
-    
-    if verbose: 
-        print(f"Timeout: Waited {timeout} seconds but the condition was not met.")
-        
-    return False
+                return (0.0, 0.0)
+
+        time.sleep(poll_interval)
+
+    logger.warning(
+        "Timeout after %.1f s waiting for image to %s.",
+        timeout,
+        "appear" if appear else "disappear",
+    )
+    return None
