@@ -578,11 +578,12 @@ class RegionHSV:
         )
         task_external = threading.Thread(target=_external_wrapper, daemon=True)
 
-        logger.info(
-            "Starting tasks. Press '%s' to pause/resume. Press '%s' to exit.",
-            self.play_pause_key,
-            self.stop_key,
-        )
+        if self.verbose:
+            logger.info(
+                "Starting tasks. Press '%s' to pause/resume. Press '%s' to exit.",
+                self.play_pause_key,
+                self.stop_key,
+            )
         task_detect.start()
         task_external.start()
 
@@ -591,7 +592,8 @@ class RegionHSV:
 
         task_detect.join(timeout=2)
         task_external.join(timeout=2)
-        logger.info("--- Program finished. ---")
+        if self.verbose:
+            logger.info("--- Program finished. ---")
 
         if external_error:
             raise RuntimeError(
@@ -974,6 +976,7 @@ def wait_for_image(
     confidence: float = 0.8,
     timeout: float = 10,
     poll_interval: float = 0.2,
+    verbose: bool = True,
 ) -> Optional[Tuple[float, float]]:
     """
     Waits for an image to appear or disappear on screen.
@@ -1031,9 +1034,10 @@ def wait_for_image(
 
         time.sleep(poll_interval)
 
-    logger.warning(
-        "Timeout after %.1f s waiting for image to %s.",
-        timeout,
-        "appear" if appear else "disappear",
-    )
+    if verbose:
+        logger.warning(
+            "Timeout after %.1f s waiting for image to %s.",
+            timeout,
+            "appear" if appear else "disappear",
+        )
     return None
