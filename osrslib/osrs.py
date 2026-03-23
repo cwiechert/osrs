@@ -510,7 +510,7 @@ class RegionHSV:
                             time.sleep(refresh_rate)
                             continue
 
-                        pyautogui.moveTo(target[0], target[1], duration=refresh_rate)
+                        pyautogui.moveTo(target[0], target[1], duration=0)
                     except Exception:
                         logger.exception("Error in _real_time_coordinates loop.")
                         time.sleep(refresh_rate)
