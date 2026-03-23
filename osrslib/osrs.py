@@ -498,6 +498,11 @@ class RegionHSV:
                                 cy = int(M["m01"] / M["m00"]) + region_top
                                 centers.append((cx, cy))
                                 areas.append(cv2.contourArea(contour))
+                                
+                            with self._lock:
+                                self._centers = list(centers)
+
+                            target = self._select_target(centers, areas)
 
                         target = self._select_target(centers, areas)
 
