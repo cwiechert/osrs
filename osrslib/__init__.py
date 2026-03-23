@@ -1,5 +1,7 @@
 from .osrs import (
     RegionHSV,
+    Region,
+    HSVRange,
     Recorder,
     click,
     get_mouse_coordinates,
@@ -9,6 +11,8 @@ from .osrs import (
 
 __all__ = [
     "RegionHSV",
+    "Region",
+    "HSVRange",
     "Recorder",
     "click",
     "get_mouse_coordinates",
