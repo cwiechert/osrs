@@ -18,6 +18,11 @@ from pynput import keyboard, mouse
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logger = logging.getLogger(__name__)
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(_handler)
+    logger.setLevel(logging.INFO)
 
 # ── Constants ────────────────────────────────────────────────────────────────
 TRACKBAR_WINDOW_NAME = "Trackbars"
