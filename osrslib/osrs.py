@@ -811,19 +811,29 @@ class Recorder:
     def reproduce(
         self,
         iterations: int = 1,
-        move_duration: float = 0.1,
         x_rand: int = 0,
         y_rand: int = 0,
+        move_fraction: float = 0.6,
+        strict_timing: bool = True,
         verbose: bool = True,
     ) -> None:
         """
-        Replays the recorded click sequence with accurate timing.
+        Replays the recorded click sequence replicating the original timing.
+
+        The gap between consecutive recorded events is split into a movement
+        phase and a wait phase.  ``move_fraction`` controls the split: at
+        0.6 the cursor spends ~60 % of each gap moving and ~40 % idle.
 
         Args:
             iterations: How many times to replay the full sequence.
-            move_duration: Seconds the cursor takes to travel between points.
             x_rand: Maximum random pixel offset on the X axis.
             y_rand: Maximum random pixel offset on the Y axis.
+            move_fraction: Fraction of each inter-event gap used for cursor
+                movement (0.0-1.0).
+            strict_timing: When ``True`` and a movement overshoots its
+                time budget, the next movement duration is shortened to
+                stay on schedule.  When ``False`` overshoots are ignored
+                and the sequence may drift.
             verbose: Print per-iteration timing stats.
 
         Raises:
@@ -835,12 +845,20 @@ class Recorder:
 
         if iterations < 1:
             raise ValueError("iterations must be >= 1.")
-        if move_duration < 0 or x_rand < 0 or y_rand < 0:
-            raise ValueError("move_duration, x_rand, and y_rand must be >= 0.")
+        if x_rand < 0 or y_rand < 0:
+            raise ValueError("x_rand and y_rand must be >= 0.")
+        if not 0.0 < move_fraction <= 1.0:
+            raise ValueError("move_fraction must be in (0.0, 1.0].")
 
-        screen_w, screen_h = pyautogui.size()
+        screen_w, screen_h = _screen_size()
         base_time = self.events[0].timestamp
         relative_times = [ev.timestamp - base_time for ev in self.events]
+
+        # Pre-compute the gap before each event (0 for the first one).
+        gaps = [0.0] + [
+            relative_times[i] - relative_times[i - 1]
+            for i in range(1, len(relative_times))
+        ]
 
         iteration_durations: List[float] = []
 
@@ -850,22 +868,31 @@ class Recorder:
         for q in range(iterations):
             iter_start = time.perf_counter()
 
-            for rel_time, ev in zip(relative_times, self.events):
+            for i, (rel_time, ev) in enumerate(zip(relative_times, self.events)):
                 target_time = iter_start + rel_time
 
                 rand_x = _clamp(ev.x + randint(-x_rand, x_rand), 0, screen_w - 1)
                 rand_y = _clamp(ev.y + randint(-y_rand, y_rand), 0, screen_h - 1)
 
-                move_start = target_time - move_duration
-                wait = move_start - time.perf_counter()
-                if wait > 0:
-                    time.sleep(wait)
+                gap = gaps[i]
 
-                _move_to(rand_x, rand_y, duration=move_duration)
+                if gap <= 0:
+                    # First event: click immediately.
+                    _move_to(rand_x, rand_y, duration=0)
+                else:
+                    budget = gap * move_fraction
 
-                final_wait = target_time - time.perf_counter()
-                if final_wait > 0:
-                    time.sleep(final_wait)
+                    if strict_timing:
+                        # If we're behind schedule, shrink the move duration.
+                        remaining = target_time - time.perf_counter()
+                        budget = min(budget, max(remaining * move_fraction, 0))
+
+                    _move_to(rand_x, rand_y, duration=budget)
+
+                    # Sleep any remaining time until the click should happen.
+                    wait = target_time - time.perf_counter()
+                    if wait > 0:
+                        time.sleep(wait)
 
                 _click_mouse(button=ev.button)
 

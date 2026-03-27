@@ -212,11 +212,12 @@ from osrslib import Recorder
 
 recorder = Recorder(record=False, filename='my_clicks.csv')
 recorder.reproduce(
-    iterations=5,       # Repeat 5 times
-    move_duration=0.2,  # Seconds to move mouse between points
-    x_rand=3,           # ±3 pixel random offset on X
-    y_rand=3,           # ±3 pixel random offset on Y
-    verbose=True        # Print timing info per iteration
+    iterations=5,          # Repeat 5 times
+    x_rand=3,              # ±3 pixel random offset on X
+    y_rand=3,              # ±3 pixel random offset on Y
+    move_fraction=0.6,     # Use 60% of each gap for movement, 40% idle
+    strict_timing=True,    # Shorten moves if behind schedule
+    verbose=True           # Print timing info per iteration
 )
 ```
 
@@ -233,9 +234,10 @@ recorder.reproduce(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `iterations` | `int` | `1` | Number of times to repeat the sequence |
-| `move_duration` | `float` | `0.1` | Seconds for mouse to travel between points |
 | `x_rand` | `int` | `0` | Max random pixel offset on X axis |
 | `y_rand` | `int` | `0` | Max random pixel offset on Y axis |
+| `move_fraction` | `float` | `0.6` | Fraction of each inter-event gap used for cursor movement (0.0-1.0). At 0.6 the cursor moves for 60% of the gap and idles for 40%. |
+| `strict_timing` | `bool` | `True` | When `True`, if a movement overshoots its time budget the next move duration is shortened to stay on schedule. When `False`, overshoots are ignored and the sequence may drift. |
 | `verbose` | `bool` | `True` | Print actual/average/original timing per iteration |
 
 ---
