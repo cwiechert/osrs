@@ -1,6 +1,7 @@
 import csv
 import ctypes
 import logging
+import os
 import platform
 import subprocess
 import time
@@ -28,6 +29,35 @@ if not logger.handlers:
     _handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(_handler)
     logger.setLevel(logging.INFO)
+
+
+# ── Emergency stop ──────────────────────────────────────────────────────────
+_emergency_listener: Optional[keyboard.Listener] = None
+
+
+def enable_failsafe(key: keyboard.Key = keyboard.Key.f6) -> None:
+    """
+    Starts a global hotkey listener that terminates the process on *key*.
+
+    Runs in a daemon thread — works even if the main thread is blocked.
+    Call once at the start of your script.
+
+    Args:
+        key: The key that triggers an immediate exit.
+    """
+    global _emergency_listener
+    if _emergency_listener is not None:
+        return
+
+    def _on_press(pressed):
+        if pressed == key:
+            logger.warning("EMERGENCY STOP (%s) — terminating process.", key)
+            os._exit(1)
+
+    _emergency_listener = keyboard.Listener(on_press=_on_press, daemon=True)
+    _emergency_listener.start()
+    logger.info("Failsafe enabled: press %s to kill the process.", key)
+
 
 # ── Constants ────────────────────────────────────────────────────────────────
 TRACKBAR_WINDOW_NAME = "Trackbars"

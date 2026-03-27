@@ -1,6 +1,8 @@
 # osrs_utils
 
-A Python utility library for automating screen interactions using computer vision and input control. Built for use with Old School RuneScape (OSRS), but usable for any screen automation task.
+A Python utility library for automating screen interactions using computer vision and low-level input simulation. Built for use with Old School RuneScape (OSRS), but usable for any screen automation task.
+
+All mouse movement uses **Bezier curves** for natural-looking paths and **hardware scan codes** via `SendInput` for input that is recognized by DirectInput applications.
 
 ## Installation
 
@@ -11,11 +13,28 @@ pip install git+https://github.com/cwiechert/osrs.git
 ## Requirements
 
 - Python 3.10+
+- Windows (uses `ctypes.windll` for low-level input)
 - `mss` — fast screen capture
 - `numpy` — image array processing
 - `opencv-python` — computer vision (HSV filtering, contour detection)
-- `PyAutoGUI` — mouse/keyboard control and image search
+- `PyAutoGUI` — image search and screen size queries
 - `pynput` — keyboard and mouse event listeners
+
+---
+
+## Emergency Stop
+
+Since the library bypasses `pyautogui`'s failsafe, it provides its own global kill switch. Call once at the start of your script:
+
+```python
+from osrslib import enable_failsafe
+from pynput import keyboard
+
+enable_failsafe()                          # Default: F6 kills the process
+enable_failsafe(key=keyboard.Key.f8)       # Custom key
+```
+
+Runs in a daemon thread — works even if the main thread is blocked or in a busy-wait loop. Pressing the key calls `os._exit(1)` immediately.
 
 ---
 
@@ -69,15 +88,17 @@ TargetStrategy.CENTROID  # Average of all centers
 
 ### `click(x, y, ...)`
 
-Moves the mouse to `(x, y)` and clicks. Supports randomization and Shift+click.
+Moves the mouse to `(x, y)` along a randomized Bezier curve and clicks using `SendInput`. Supports randomization and Shift+click.
 
 ```python
 from osrslib import click
 
-click(960, 540)                          # Simple click at center
-click(960, 540, x_rand=5, y_rand=5)     # Click with ±5px random offset
-click(960, 540, shift=True)             # Shift+click
-click(960, 540, duration=0.4)           # Custom move duration in seconds
+click(960, 540)                                        # Simple click
+click(960, 540, x_rand=5, y_rand=5)                   # ±5px random offset
+click(960, 540, shift=True)                            # Shift+click
+click(960, 540, duration=0.4)                          # Custom move duration
+click(960, 540, curve_strength=0.5)                    # More curved path
+click(960, 540, duration=1.0, curve_strength=0)        # Straight line, precise 1s
 ```
 
 | Parameter | Type | Default | Description |
@@ -87,7 +108,32 @@ click(960, 540, duration=0.4)           # Custom move duration in seconds
 | `x_rand` | `int` | `0` | Max random pixel offset on X |
 | `y_rand` | `int` | `0` | Max random pixel offset on Y |
 | `shift` | `bool` | `False` | Hold Shift while clicking |
-| `duration` | `float` | random 0.3–0.5s | Mouse movement duration |
+| `duration` | `float` | random 0.3-0.5s | Mouse movement duration |
+| `curve_strength` | `float` | random 0.1-0.3 | Bezier curve deviation (0 = straight line, 1 = very curved) |
+
+Mouse movement uses `ctypes.windll.user32.SetCursorPos` with a cubic Bezier curve and `time.perf_counter` busy-wait for sub-millisecond timing accuracy. Mouse clicks use `SendInput` with proper down/up events and a randomized hold time (40-90ms).
+
+---
+
+### `press_key(key, ...)`
+
+Simulates a physical key press using hardware scan codes via `SendInput` with `KEYEVENTF_SCANCODE`. Recognized by applications that read raw/DirectInput (unlike `pyautogui.press()` which sends virtual-key events).
+
+```python
+from osrslib import press_key
+
+press_key("1")                      # Hold time: random 40-90ms
+press_key("space", hold_time=0.2)   # Fixed 200ms hold
+press_key("f1")                     # Function keys
+press_key("enter")                  # Named keys
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `key` | `str` | required | Key name: `"a"`-`"z"`, `"0"`-`"9"`, or named key |
+| `hold_time` | `float` | random 0.04-0.09s | Seconds to hold the key before releasing |
+
+**Available named keys:** `space`, `enter`, `esc`, `tab`, `backspace`, `shift`, `ctrl`, `alt`, `f1`-`f12`
 
 ---
 
@@ -290,7 +336,7 @@ result = wait_for_image('images/flash.png', poll_interval=0.05)
 | `needle_image_path` | `str` | required | Path to the reference image |
 | `region` | `Region`, `dict`, or `None` | `None` | Search area. Accepts a `Region` dataclass or a dict with `left`, `top`, `width`, `height`. Searches full screen if `None`. |
 | `appear` | `bool` | `True` | `True` waits for the image to appear, `False` waits for it to disappear |
-| `confidence` | `float` | `0.8` | Match confidence threshold (0.0–1.0) |
+| `confidence` | `float` | `0.8` | Match confidence threshold (0.0-1.0) |
 | `timeout` | `float` | `10` | Max seconds to wait. `0` runs indefinitely. |
 | `poll_interval` | `float` | `0.2` | Seconds between screen captures |
 
@@ -308,6 +354,7 @@ osrs/
 ├── osrslib/
 │   ├── __init__.py
 │   └── osrs.py
+├── scripts/
 ├── pyproject.toml
 ├── requirements.txt
 └── README.md
