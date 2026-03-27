@@ -4,6 +4,7 @@ from .osrs import (
     HSVRange,
     Recorder,
     click,
+    press_key,
     get_mouse_coordinates,
     get_region,
     wait_for_image
@@ -15,6 +16,7 @@ __all__ = [
     "HSVRange",
     "Recorder",
     "click",
+    "press_key",
     "get_mouse_coordinates",
     "get_region",
     "wait_for_image"

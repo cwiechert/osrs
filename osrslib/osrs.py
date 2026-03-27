@@ -1,4 +1,5 @@
 import csv
+import ctypes
 import logging
 import platform
 import subprocess
@@ -6,7 +7,8 @@ import time
 import threading
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from random import randint
+from math import ceil
+from random import randint, uniform
 from typing import Optional, Union, Tuple, Callable, List
 
 import cv2
@@ -14,6 +16,9 @@ import numpy as np
 import pyautogui
 from mss import mss
 from pynput import keyboard, mouse
+
+pyautogui.PAUSE = 0
+pyautogui.FAILSAFE = False
 
 
 # ── Logging ──────────────────────────────────────────────────────────────────
@@ -510,7 +515,7 @@ class RegionHSV:
                             time.sleep(refresh_rate)
                             continue
 
-                        pyautogui.moveTo(target[0], target[1], duration=0)
+                        _move_to(target[0], target[1], duration=0)
                     except Exception:
                         logger.exception("Error in _real_time_coordinates loop.")
                         time.sleep(refresh_rate)
@@ -826,13 +831,13 @@ class Recorder:
                 if wait > 0:
                     time.sleep(wait)
 
-                pyautogui.moveTo(rand_x, rand_y, duration=move_duration)
+                _move_to(rand_x, rand_y, duration=move_duration)
 
                 final_wait = target_time - time.perf_counter()
                 if final_wait > 0:
                     time.sleep(final_wait)
 
-                pyautogui.click(button=ev.button)
+                _click_mouse(button=ev.button)
 
             iter_duration = time.perf_counter() - iter_start
             iteration_durations.append(iter_duration)
@@ -850,11 +855,233 @@ class Recorder:
                 )
 
 
+# ── Win32 low-level input ────────────────────────────────────────────────────
+
+_INPUT_MOUSE = 0
+_INPUT_KEYBOARD = 1
+_KEYEVENTF_SCANCODE = 0x0008
+_KEYEVENTF_KEYUP = 0x0002
+_MOUSEEVENTF_LEFTDOWN = 0x0002
+_MOUSEEVENTF_LEFTUP = 0x0004
+_MOUSEEVENTF_RIGHTDOWN = 0x0008
+_MOUSEEVENTF_RIGHTUP = 0x0010
+
+# Map readable key names → hardware scan codes (Set 1).
+_SCAN_CODES: dict = {
+    "1": 0x02, "2": 0x03, "3": 0x04, "4": 0x05, "5": 0x06,
+    "6": 0x07, "7": 0x08, "8": 0x09, "9": 0x0A, "0": 0x0B,
+    "q": 0x10, "w": 0x11, "e": 0x12, "r": 0x13, "t": 0x14,
+    "y": 0x15, "u": 0x16, "i": 0x17, "o": 0x18, "p": 0x19,
+    "a": 0x1E, "s": 0x1F, "d": 0x20, "f": 0x21, "g": 0x22,
+    "h": 0x23, "j": 0x24, "k": 0x25, "l": 0x26,
+    "z": 0x2C, "x": 0x2D, "c": 0x2E, "v": 0x2F, "b": 0x30,
+    "n": 0x31, "m": 0x32,
+    "space": 0x39, "enter": 0x1C, "esc": 0x01, "tab": 0x0F,
+    "backspace": 0x0E, "shift": 0x2A, "ctrl": 0x1D, "alt": 0x38,
+    "f1": 0x3B, "f2": 0x3C, "f3": 0x3D, "f4": 0x3E, "f5": 0x3F,
+    "f6": 0x40, "f7": 0x41, "f8": 0x42, "f9": 0x43, "f10": 0x44,
+    "f11": 0x57, "f12": 0x58,
+}
+
+
+class _MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", ctypes.c_long),
+        ("dy", ctypes.c_long),
+        ("mouseData", ctypes.c_ulong),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+
+class _KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", ctypes.c_ushort),
+        ("wScan", ctypes.c_ushort),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+
+class _INPUT(ctypes.Structure):
+    class _U(ctypes.Union):
+        _fields_ = [("mi", _MOUSEINPUT), ("ki", _KEYBDINPUT)]
+
+    _anonymous_ = ("u",)
+    _fields_ = [
+        ("type", ctypes.c_ulong),
+        ("u", _U),
+    ]
+
+
+def _send_scan(scan_code: int, key_up: bool = False) -> None:
+    """Sends a single scan-code key event via ``SendInput``."""
+    flags = _KEYEVENTF_SCANCODE | (_KEYEVENTF_KEYUP if key_up else 0)
+    ki = _KEYBDINPUT(
+        wVk=0,
+        wScan=scan_code,
+        dwFlags=flags,
+        time=0,
+        dwExtraInfo=ctypes.pointer(ctypes.c_ulong(0)),
+    )
+    inp = _INPUT(type=_INPUT_KEYBOARD)
+    inp.ki = ki
+    ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
+
+
+def _send_mouse_event(flags: int) -> None:
+    """Sends a single mouse event via ``SendInput``."""
+    mi = _MOUSEINPUT(
+        dx=0, dy=0, mouseData=0, dwFlags=flags, time=0,
+        dwExtraInfo=ctypes.pointer(ctypes.c_ulong(0)),
+    )
+    inp = _INPUT(type=_INPUT_MOUSE)
+    inp.mi = mi
+    ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
+
+
+def _click_mouse(button: str = "left", hold_time: Optional[float] = None) -> None:
+    """Simulates a mouse click via ``SendInput``."""
+    if hold_time is None:
+        hold_time = uniform(0.04, 0.09)
+
+    if button == "right":
+        _send_mouse_event(_MOUSEEVENTF_RIGHTDOWN)
+        time.sleep(hold_time)
+        _send_mouse_event(_MOUSEEVENTF_RIGHTUP)
+    else:
+        _send_mouse_event(_MOUSEEVENTF_LEFTDOWN)
+        time.sleep(hold_time)
+        _send_mouse_event(_MOUSEEVENTF_LEFTUP)
+
+
+def press_key(
+    key: str,
+    hold_time: Optional[float] = None,
+) -> None:
+    """
+    Simulates a physical key press using hardware scan codes.
+
+    Unlike ``pyautogui.press()`` which sends virtual-key events, this
+    function uses ``SendInput`` with ``KEYEVENTF_SCANCODE``, which is
+    recognised by applications that read raw / DirectInput.
+
+    Args:
+        key: Key name — a single character (``"a"``-``"z"``, ``"0"``-``"9"``)
+            or a named key (``"space"``, ``"enter"``, ``"f1"``-``"f12"``,
+            ``"shift"``, ``"ctrl"``, ``"alt"``, ``"esc"``, ``"tab"``,
+            ``"backspace"``).
+        hold_time: Seconds to hold the key down before releasing.
+            Defaults to a random value between 0.04 and 0.09 s.
+
+    Raises:
+        ValueError: If *key* is not in the scan-code table.
+    """
+    scan = _SCAN_CODES.get(key.lower())
+    if scan is None:
+        raise ValueError(
+            f"Unknown key {key!r}. Available: {', '.join(sorted(_SCAN_CODES))}"
+        )
+
+    if hold_time is None:
+        hold_time = uniform(0.04, 0.09)
+
+    _send_scan(scan)
+    time.sleep(hold_time)
+    _send_scan(scan, key_up=True)
+
+
 # ── Standalone helpers ───────────────────────────────────────────────────────
 
 def _clamp(value: int, lo: int, hi: int) -> int:
     """Clamps *value* to the inclusive range [lo, hi]."""
     return max(lo, min(value, hi))
+
+
+_cached_screen_size: Optional[Tuple[int, int]] = None
+
+
+def _screen_size() -> Tuple[int, int]:
+    """Returns screen dimensions, cached after first call."""
+    global _cached_screen_size
+    if _cached_screen_size is None:
+        _cached_screen_size = pyautogui.size()
+    return _cached_screen_size
+
+
+def _cubic_bezier(
+    t: float,
+    p0: Tuple[float, float],
+    p1: Tuple[float, float],
+    p2: Tuple[float, float],
+    p3: Tuple[float, float],
+) -> Tuple[float, float]:
+    """Evaluates a cubic Bézier curve at parameter *t* (0..1)."""
+    u = 1 - t
+    x = u**3 * p0[0] + 3 * u**2 * t * p1[0] + 3 * u * t**2 * p2[0] + t**3 * p3[0]
+    y = u**3 * p0[1] + 3 * u**2 * t * p1[1] + 3 * u * t**2 * p2[1] + t**3 * p3[1]
+    return (x, y)
+
+
+def _move_to(
+    x: int,
+    y: int,
+    duration: float = 0.5,
+    curve_strength: float = 0.3,
+    steps_per_second: int = 120,
+) -> None:
+    """Moves the cursor to (*x*, *y*) along a randomised Bézier curve."""
+    start_x, start_y = pyautogui.position()
+
+    if duration <= 0:
+        ctypes.windll.user32.SetCursorPos(x, y)
+        return
+
+    dx = x - start_x
+    dy = y - start_y
+    dist = (dx**2 + dy**2) ** 0.5
+
+    if dist == 0:
+        return
+
+    # Perpendicular direction for offsetting control points.
+    perp_x = -dy / dist
+    perp_y = dx / dist
+
+    # Two control points at ~1/3 and ~2/3 of the path, each randomly
+    # offset perpendicular to the straight line.
+    offset1 = uniform(-curve_strength, curve_strength) * dist
+    offset2 = uniform(-curve_strength, curve_strength) * dist
+
+    cp1 = (
+        start_x + dx * uniform(0.2, 0.4) + perp_x * offset1,
+        start_y + dy * uniform(0.2, 0.4) + perp_y * offset1,
+    )
+    cp2 = (
+        start_x + dx * uniform(0.6, 0.8) + perp_x * offset2,
+        start_y + dy * uniform(0.6, 0.8) + perp_y * offset2,
+    )
+
+    p0 = (float(start_x), float(start_y))
+    p3 = (float(x), float(y))
+
+    total_steps = max(2, ceil(duration * steps_per_second))
+    set_cursor = ctypes.windll.user32.SetCursorPos
+    perf = time.perf_counter
+    start_time = perf()
+
+    for i in range(1, total_steps + 1):
+        # Target wall-clock time for this step.
+        target = start_time + (i / total_steps) * duration
+        t = i / total_steps
+        bx, by = _cubic_bezier(t, p0, cp1, cp2, p3)
+        set_cursor(int(round(bx)), int(round(by)))
+
+        # Busy-wait for precise timing (sub-ms accuracy).
+        while perf() < target:
+            pass
 
 
 def click(
@@ -864,6 +1091,7 @@ def click(
     y_rand: int = 0,
     shift: bool = False,
     duration: Optional[float] = None,
+    curve_strength: Optional[float] = None,
 ) -> None:
     """
     Clicks at screen coordinates with optional randomisation.
@@ -876,28 +1104,32 @@ def click(
         shift: Hold Shift while clicking.
         duration: Seconds for the cursor movement.  Defaults to a random
             value between 0.30 and 0.50 s.
+        curve_strength: How far the cursor path deviates from a straight
+            line (0 = straight, 1 = very curved).
 
     Raises:
         ValueError: If the base coordinates are outside the screen.
     """
-    screen_w, screen_h = pyautogui.size()
+    screen_w, screen_h = _screen_size()
     if not (0 <= x <= screen_w and 0 <= y <= screen_h):
         raise ValueError(f"Coordinates ({x}, {y}) are outside screen bounds.")
 
     if duration is None:
         duration = randint(30, 50) / 100
+    if curve_strength is None:
+        curve_strength = uniform(0.1, 0.3)
 
     target_x = _clamp(x + randint(-x_rand, x_rand), 0, screen_w - 1)
     target_y = _clamp(y + randint(-y_rand, y_rand), 0, screen_h - 1)
 
-    pyautogui.moveTo(target_x, target_y, duration=duration)
+    _move_to(target_x, target_y, duration=duration, curve_strength=curve_strength)
 
     if shift:
-        pyautogui.keyDown("shift")
-        pyautogui.click()
-        pyautogui.keyUp("shift")
+        _send_scan(_SCAN_CODES["shift"])
+        _click_mouse()
+        _send_scan(_SCAN_CODES["shift"], key_up=True)
     else:
-        pyautogui.click()
+        _click_mouse()
 
 
 def get_mouse_coordinates(
