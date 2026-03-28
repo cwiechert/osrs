@@ -4,6 +4,8 @@ A Python utility library for automating screen interactions using computer visio
 
 All mouse movement uses **Bezier curves** for natural-looking paths and **hardware scan codes** via `SendInput` for input that is recognized by DirectInput applications.
 
+All timing uses **log-normal distributions** (not uniform) to match the statistical shape of human reaction times, click hold durations, and movement speeds. Inter-step intervals include small random jitter to avoid sub-millisecond regularity.
+
 ## Installation
 
 ```bash
@@ -108,10 +110,10 @@ click(960, 540, duration=1.0, curve_strength=0)        # Straight line, precise 
 | `x_rand` | `int` | `0` | Max random pixel offset on X |
 | `y_rand` | `int` | `0` | Max random pixel offset on Y |
 | `shift` | `bool` | `False` | Hold Shift while clicking |
-| `duration` | `float` | random 0.3-0.5s | Mouse movement duration |
+| `duration` | `float` | log-normal ~0.40s | Mouse movement duration (sampled from log-normal, range 0.08-1.2s) |
 | `curve_strength` | `float` | random 0.1-0.3 | Bezier curve deviation (0 = straight line, 1 = very curved) |
 
-Mouse movement uses `ctypes.windll.user32.SetCursorPos` with a cubic Bezier curve and `time.perf_counter` busy-wait for sub-millisecond timing accuracy. Mouse clicks use `SendInput` with proper down/up events and a randomized hold time (40-90ms).
+Mouse movement uses `ctypes.windll.user32.SetCursorPos` with a cubic Bezier curve. Click offsets use a **biased Gaussian** distribution (slight directional overshoot + drift) instead of symmetric uniform. Mouse clicks use `SendInput` with log-normal hold times (~65ms median).
 
 ---
 
@@ -131,7 +133,7 @@ press_key("enter")                  # Named keys
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `key` | `str` | required | Key name: `"a"`-`"z"`, `"0"`-`"9"`, or named key |
-| `hold_time` | `float` | random 0.04-0.09s | Seconds to hold the key before releasing |
+| `hold_time` | `float` | log-normal ~0.075s | Seconds to hold the key before releasing (log-normal, range 0.03-0.20s) |
 
 **Available named keys:** `space`, `enter`, `esc`, `tab`, `backspace`, `shift`, `ctrl`, `alt`, `f1`-`f12`
 
@@ -346,6 +348,27 @@ result = wait_for_image('images/flash.png', poll_interval=0.05)
 - `(x, y)` — center of matched image if `appear=True` and found
 - `(0.0, 0.0)` — if `appear=False` and image disappeared (truthy sentinel)
 - `None` — if timeout was reached
+
+---
+
+## Humanization
+
+The library applies several layers of human-like randomization automatically:
+
+| Behavior | Implementation |
+|----------|---------------|
+| **Timing distributions** | All delays (move duration, click hold, key hold) use log-normal distributions instead of uniform — matching the statistical shape of real human input. |
+| **Movement jitter** | Inter-step timing in Bezier curves uses right-skewed log-normal jitter (median ~+1ms, spikes up to ~12ms, occasionally slightly early). Avoids the sub-millisecond regularity of a perfect busy-wait loop and mirrors the asymmetric lateness bias of real human input. |
+| **Click offset bias** | Aiming offsets use a biased Gaussian: slight overshoot in the movement direction + directional drift, instead of a symmetric uniform distribution. |
+| **Bezier variety** | Control points are placed at wider random fractions (15-45% and 55-85% of path length), producing more diverse curve shapes across actions. |
+| **Replay temporal drift** | `reproduce()` applies a per-iteration tempo scale (±5%) and cumulative random walk so no two playback iterations are structurally identical. |
+| **Replay spatial drift** | Each `reproduce()` iteration shifts all base coordinates by a small Gaussian offset (simulating hand/posture repositioning), so click clusters don't center on the exact same pixels across iterations. |
+
+### Best Practices
+
+- **Vary your detection region.** A fixed `Region` watching the same pixels for hours is itself anomalous. Periodically shift or resize the region in your script to simulate camera movement or attention shifts.
+- **Add breaks.** For long sessions, insert random idle periods (30s-5min) between action bursts. The library handles micro-pauses, but macro-level breaks should be scripted by the caller.
+- **Randomize action order.** If your script performs a sequence of tasks (e.g., mining several rocks), shuffle the order between iterations.
 
 ---
 

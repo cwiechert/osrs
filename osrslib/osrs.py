@@ -9,7 +9,8 @@ import threading
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from math import ceil
-from random import randint, uniform
+from math import exp, log
+from random import gauss, uniform
 from typing import Optional, Union, Tuple, Callable, List
 
 import cv2
@@ -868,17 +869,42 @@ class Recorder:
         for q in range(iterations):
             iter_start = time.perf_counter()
 
-            for i, (rel_time, ev) in enumerate(zip(relative_times, self.events)):
-                target_time = iter_start + rel_time
+            # Per-iteration timing drift: stretch/compress the whole
+            # sequence by ±5 % so no two iterations are structurally
+            # identical, plus a cumulative random walk.
+            tempo_scale = uniform(0.95, 1.05)
+            cumulative_drift = 0.0
 
-                rand_x = _clamp(ev.x + randint(-x_rand, x_rand), 0, screen_w - 1)
-                rand_y = _clamp(ev.y + randint(-y_rand, y_rand), 0, screen_h - 1)
+            # Per-iteration spatial drift: shift ALL base coordinates by a
+            # small random offset so the click cluster center moves between
+            # iterations (simulates posture/hand repositioning).
+            iter_drift_x = int(round(gauss(0, max(x_rand * 0.4, 2))))
+            iter_drift_y = int(round(gauss(0, max(y_rand * 0.4, 2))))
+
+            for i, (rel_time, ev) in enumerate(zip(relative_times, self.events)):
+                cumulative_drift += gauss(0, 0.008)
+                target_time = iter_start + rel_time * tempo_scale + cumulative_drift
+
+                # Base position shifted by iteration drift.
+                base_x = ev.x + iter_drift_x
+                base_y = ev.y + iter_drift_y
+
+                # Biased Gaussian offset (overshoot + slight drift).
+                mx, my = pyautogui.position()
+                dir_x = 1 if base_x >= mx else -1
+                dir_y = 1 if base_y >= my else -1
+                bias_x = dir_x * uniform(0, x_rand * 0.3) if x_rand else 0
+                bias_y = dir_y * uniform(0, y_rand * 0.3) if y_rand else 0
+                jx = gauss(0, max(x_rand * 0.5, 1)) if x_rand else 0
+                jy = gauss(0, max(y_rand * 0.5, 1)) if y_rand else 0
+                rand_x = _clamp(base_x + int(round(bias_x + jx)), 0, screen_w - 1)
+                rand_y = _clamp(base_y + int(round(bias_y + jy)), 0, screen_h - 1)
 
                 gap = gaps[i]
 
                 if gap <= 0:
                     # First event: click immediately.
-                    _move_to(rand_x, rand_y, duration=0)
+                    _move_to(rand_x, rand_y, duration=0.3)
                 else:
                     budget = gap * move_fraction
 
@@ -1002,7 +1028,7 @@ def _send_mouse_event(flags: int) -> None:
 def _click_mouse(button: str = "left", hold_time: Optional[float] = None) -> None:
     """Simulates a mouse click via ``SendInput``."""
     if hold_time is None:
-        hold_time = uniform(0.04, 0.09)
+        hold_time = _human_delay(mu=0.065, sigma=0.03, lo=0.03, hi=0.18)
 
     if button == "right":
         _send_mouse_event(_MOUSEEVENTF_RIGHTDOWN)
@@ -1043,7 +1069,7 @@ def press_key(
         )
 
     if hold_time is None:
-        hold_time = uniform(0.04, 0.09)
+        hold_time = _human_delay(mu=0.075, sigma=0.035, lo=0.03, hi=0.20)
 
     _send_scan(scan)
     time.sleep(hold_time)
@@ -1066,6 +1092,60 @@ def _screen_size() -> Tuple[int, int]:
     if _cached_screen_size is None:
         _cached_screen_size = pyautogui.size()
     return _cached_screen_size
+
+
+def _human_delay(mu: float, sigma: float, lo: float, hi: float) -> float:
+    """Samples a log-normal delay clamped to [lo, hi].
+
+    Log-normal approximates human reaction/hold times better than uniform:
+    most values cluster near the median with occasional longer outliers.
+    """
+    log_mu = log(mu**2 / (mu**2 + sigma**2) ** 0.5)
+    log_sigma = (log(1 + sigma**2 / mu**2)) ** 0.5
+    return max(lo, min(hi, exp(gauss(log_mu, log_sigma))))
+
+
+def _jittered_sleep(target_time: float) -> None:
+    """Sleeps until *target_time* with right-skewed human-like jitter.
+
+    Humans are more likely to be slightly late than early, so the jitter
+    uses a log-normal offset biased toward positive (late) values:
+    median ~+1 ms, occasional spikes up to ~12 ms, rarely early by > 2 ms.
+    """
+    # Right-skewed: mostly +0.5 to +4 ms, occasional longer pauses.
+    skew = _human_delay(mu=0.002, sigma=0.003, lo=0.0, hi=0.012)
+    # Small chance of being slightly early.
+    if uniform(0, 1) < 0.25:
+        skew = -skew * 0.4  # early side is smaller
+    deadline = target_time + skew
+    now = time.perf_counter()
+    if deadline - now > 0.002:
+        time.sleep(deadline - now - 0.001)
+    while time.perf_counter() < deadline:
+        pass
+
+
+def _minimum_jerk(t: float, skew: float = 0.0) -> float:
+    """Applies a minimum-jerk velocity profile to parameter *t* (0..1).
+
+    The minimum-jerk model (Flash & Hogan 1985) is the standard kinematic
+    model of human reaching movements: rapid acceleration to peak speed
+    around the midpoint, then gradual deceleration toward the target.
+
+    The *skew* parameter (typically -0.15 to +0.15) shifts the peak
+    velocity earlier or later, adding per-movement variety.
+    """
+    # Base minimum-jerk: 10t³ - 15t⁴ + 6t⁵
+    # With skew we blend toward an asymmetric profile.
+    base = 10 * t**3 - 15 * t**4 + 6 * t**5
+    if skew == 0.0:
+        return base
+    # Shift peak by blending with a power curve.
+    # Positive skew = decelerate later, negative = decelerate earlier.
+    power = max(0.3, 1.0 - skew)
+    asymmetric = t ** power
+    blend = abs(skew) * 2  # 0..~0.3
+    return base * (1 - blend) + asymmetric * blend
 
 
 def _cubic_bezier(
@@ -1112,13 +1192,15 @@ def _move_to(
     offset1 = uniform(-curve_strength, curve_strength) * dist
     offset2 = uniform(-curve_strength, curve_strength) * dist
 
+    t1 = uniform(0.15, 0.45)
+    t2 = uniform(0.55, 0.85)
     cp1 = (
-        start_x + dx * uniform(0.2, 0.4) + perp_x * offset1,
-        start_y + dy * uniform(0.2, 0.4) + perp_y * offset1,
+        start_x + dx * t1 + perp_x * offset1,
+        start_y + dy * t1 + perp_y * offset1,
     )
     cp2 = (
-        start_x + dx * uniform(0.6, 0.8) + perp_x * offset2,
-        start_y + dy * uniform(0.6, 0.8) + perp_y * offset2,
+        start_x + dx * t2 + perp_x * offset2,
+        start_y + dy * t2 + perp_y * offset2,
     )
 
     p0 = (float(start_x), float(start_y))
@@ -1129,16 +1211,19 @@ def _move_to(
     perf = time.perf_counter
     start_time = perf()
 
+    # Per-movement random skew so the velocity peak shifts slightly.
+    skew = uniform(-0.12, 0.12)
+
     for i in range(1, total_steps + 1):
-        # Target wall-clock time for this step.
         target = start_time + (i / total_steps) * duration
-        t = i / total_steps
+        # Remap linear t through minimum-jerk easing: accelerate, peak, decelerate.
+        t_linear = i / total_steps
+        t = _minimum_jerk(t_linear, skew)
         bx, by = _cubic_bezier(t, p0, cp1, cp2, p3)
         set_cursor(int(round(bx)), int(round(by)))
 
-        # Busy-wait for precise timing (sub-ms accuracy).
-        while perf() < target:
-            pass
+        # Human-like jittered wait instead of perfect busy-wait.
+        _jittered_sleep(target)
 
 
 def click(
@@ -1172,12 +1257,21 @@ def click(
         raise ValueError(f"Coordinates ({x}, {y}) are outside screen bounds.")
 
     if duration is None:
-        duration = randint(30, 50) / 100
+        duration = _human_delay(mu=0.40, sigma=0.15, lo=0.08, hi=1.2)
     if curve_strength is None:
         curve_strength = uniform(0.1, 0.3)
 
-    target_x = _clamp(x + randint(-x_rand, x_rand), 0, screen_w - 1)
-    target_y = _clamp(y + randint(-y_rand, y_rand), 0, screen_h - 1)
+    # Biased offset: slight overshoot from current cursor toward target,
+    # plus dominant-hand rightward drift.  Not perfectly symmetric.
+    mx, my = pyautogui.position()
+    dir_x = 1 if x >= mx else -1
+    dir_y = 1 if y >= my else -1
+    bias_x = dir_x * uniform(0, x_rand * 0.3) if x_rand else 0
+    bias_y = dir_y * uniform(0, y_rand * 0.3) if y_rand else 0
+    jitter_x = gauss(0, max(x_rand * 0.5, 1)) if x_rand else 0
+    jitter_y = gauss(0, max(y_rand * 0.5, 1)) if y_rand else 0
+    target_x = _clamp(x + int(round(bias_x + jitter_x)), 0, screen_w - 1)
+    target_y = _clamp(y + int(round(bias_y + jitter_y)), 0, screen_h - 1)
 
     _move_to(target_x, target_y, duration=duration, curve_strength=curve_strength)
 
