@@ -848,6 +848,22 @@ class Recorder:
             self.filename,
         )
 
+    def print_events(self) -> None:
+        """Prints the recorded sequence as readable event/sleep pairs."""
+        if not self.events:
+            logger.warning("No events to display.")
+            return
+
+        for i, ev in enumerate(self.events):
+            if ev.event_type == "key":
+                print(f"Key({ev.key})")
+            else:
+                print(f"click({ev.x}, {ev.y}, {ev.button})")
+
+            if i < len(self.events) - 1:
+                gap = self.events[i + 1].timestamp - ev.timestamp
+                print(f"sleep({gap:.2f})")
+
     # ── Playback ─────────────────────────────────────────────────────────
     def reproduce(
         self,
