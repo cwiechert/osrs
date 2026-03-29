@@ -671,12 +671,14 @@ class RegionHSV:
 
 @dataclass
 class ClickEvent:
-    """A single recorded mouse-click event."""
+    """A single recorded input event (mouse click or key press)."""
 
     timestamp: float
     x: int
     y: int
-    button: str  # "left" | "right"
+    button: str  # "left" | "right" | ""
+    event_type: str = "click"  # "click" | "key"
+    key: str = ""  # key name for key events
 
 
 class Recorder:
@@ -699,7 +701,7 @@ class Recorder:
             rec = Recorder(record=False, filename="clicks.csv")
             rec.reproduce(iterations=3, x_rand=5, y_rand=5)
     """
-    _CSV_FIELDS = ("timestamps", "x_axis", "y_axis", "button")
+    _CSV_FIELDS = ("timestamps", "x_axis", "y_axis", "button", "event_type", "key")
 
     def __init__(
         self,
@@ -721,10 +723,13 @@ class Recorder:
         try:
             with open(self.filename, "r", newline="") as fh:
                 reader = csv.DictReader(fh)
-                required = set(self._CSV_FIELDS)
-                if not required.issubset(reader.fieldnames or []):
-                    missing = required - set(reader.fieldnames or [])
+                fieldnames = set(reader.fieldnames or [])
+                required = {"timestamps", "x_axis", "y_axis", "button"}
+                if not required.issubset(fieldnames):
+                    missing = required - fieldnames
                     raise ValueError(f"CSV missing required columns: {missing}")
+
+                has_keys = "event_type" in fieldnames
 
                 self.events = [
                     ClickEvent(
@@ -732,6 +737,8 @@ class Recorder:
                         x=int(row["x_axis"]),
                         y=int(row["y_axis"]),
                         button=row["button"],
+                        event_type=row.get("event_type", "click") if has_keys else "click",
+                        key=row.get("key", "") if has_keys else "",
                     )
                     for row in reader
                 ]
@@ -757,6 +764,8 @@ class Recorder:
                         "x_axis": ev.x,
                         "y_axis": ev.y,
                         "button": ev.button,
+                        "event_type": ev.event_type,
+                        "key": ev.key,
                     }
                 )
 
@@ -779,9 +788,37 @@ class Recorder:
             return False
         return None
 
-    def record_and_save(self) -> None:
+    def _on_press_record(self, key) -> Optional[bool]:
+        """Keyboard listener callback that records key presses and stops on stop_key."""
+        if key == self.stop_key:
+            return False
+
+        try:
+            key_name = key.char  # alphanumeric keys
+        except AttributeError:
+            key_name = key.name  # special keys (shift, ctrl, etc.)
+
+        if key_name:
+            self.events.append(
+                ClickEvent(
+                    timestamp=time.perf_counter(),
+                    x=0,
+                    y=0,
+                    button="",
+                    event_type="key",
+                    key=key_name,
+                )
+            )
+        return None
+
+    def record_and_save(self, record_keys: bool = False) -> None:
         """
-        Begins recording mouse clicks until ``self.stop_key`` is pressed.
+        Begins recording mouse clicks (and optionally key presses) until
+        ``self.stop_key`` is pressed.
+
+        Args:
+            record_keys: If ``True``, key presses are also recorded alongside
+                mouse clicks.
 
         Raises:
             RuntimeError: If called when not in recording mode.
@@ -791,10 +828,13 @@ class Recorder:
                 "Not in recording mode. Instantiate with record=True."
             )
 
-        logger.info("Recording mouse clicks… Press '%s' to stop.", self.stop_key)
+        what = "mouse clicks and key presses" if record_keys else "mouse clicks"
+        logger.info("Recording %s… Press '%s' to stop.", what, self.stop_key)
+
+        on_press = self._on_press_record if record_keys else self._on_press
 
         mouse_listener = mouse.Listener(on_click=self._on_click)
-        keyboard_listener = keyboard.Listener(on_press=self._on_press)
+        keyboard_listener = keyboard.Listener(on_press=on_press)
 
         mouse_listener.start()
         keyboard_listener.start()
@@ -884,6 +924,14 @@ class Recorder:
             for i, (rel_time, ev) in enumerate(zip(relative_times, self.events)):
                 cumulative_drift += gauss(0, 0.008)
                 target_time = iter_start + rel_time * tempo_scale + cumulative_drift
+
+                if ev.event_type == "key":
+                    # Wait until the key should be pressed.
+                    wait = target_time - time.perf_counter()
+                    if wait > 0:
+                        time.sleep(wait)
+                    press_key(ev.key)
+                    continue
 
                 # Base position shifted by iteration drift.
                 base_x = ev.x + iter_drift_x
