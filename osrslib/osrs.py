@@ -1341,7 +1341,9 @@ def click(
 
     if shift:
         _send_scan(_SCAN_CODES["shift"])
+        time.sleep(0.05)
         _click_mouse()
+        time.sleep(0.03)
         _send_scan(_SCAN_CODES["shift"], key_up=True)
     else:
         _click_mouse()
