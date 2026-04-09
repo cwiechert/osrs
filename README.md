@@ -6,6 +6,26 @@ All mouse movement uses **Bezier curves** for natural-looking paths and **hardwa
 
 All timing uses **log-normal distributions** (not uniform) to match the statistical shape of human reaction times, click hold durations, and movement speeds. Inter-step intervals include small random jitter to avoid sub-millisecond regularity.
 
+## Emergency Stop — `enable_failsafe()`
+
+Since the library bypasses `pyautogui`'s failsafe, it provides its own global kill switch. **Call once at the start of every script.**
+
+```python
+from osrslib import enable_failsafe
+from pynput import keyboard
+
+enable_failsafe()                          # Default: F6 kills the process
+enable_failsafe(key=keyboard.Key.f8)       # Custom key
+```
+
+Runs in a daemon thread — works even if the main thread is blocked or in a busy-wait loop. Pressing the key calls `os._exit(1)` immediately.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `key` | `keyboard.Key` | `keyboard.Key.f6` | The key that triggers an immediate exit |
+
+---
+
 ## Installation
 
 ```bash
@@ -21,22 +41,6 @@ pip install git+https://github.com/cwiechert/osrs.git
 - `opencv-python` — computer vision (HSV filtering, contour detection)
 - `PyAutoGUI` — image search and screen size queries
 - `pynput` — keyboard and mouse event listeners
-
----
-
-## Emergency Stop
-
-Since the library bypasses `pyautogui`'s failsafe, it provides its own global kill switch. Call once at the start of your script:
-
-```python
-from osrslib import enable_failsafe
-from pynput import keyboard
-
-enable_failsafe()                          # Default: F6 kills the process
-enable_failsafe(key=keyboard.Key.f8)       # Custom key
-```
-
-Runs in a daemon thread — works even if the main thread is blocked or in a busy-wait loop. Pressing the key calls `os._exit(1)` immediately.
 
 ---
 
@@ -190,7 +194,7 @@ region.as_dict()  # {'left': 100, 'top': 200, 'width': 400, 'height': 300}
 
 ### `Recorder`
 
-Records mouse click events to a CSV file and replays them with accurate timing and optional randomization.
+Records mouse clicks (and optionally key presses) to a CSV file and replays them with accurate timing and optional randomization.
 
 #### Recording
 
@@ -204,7 +208,25 @@ recorder = Recorder(record=True, filename='my_clicks.csv')
 # Custom stop key: Right Shift
 recorder = Recorder(record=True, stop_key=keyboard.Key.shift_r)
 
-recorder.record_and_save()
+recorder.record_and_save()                    # Record only mouse clicks
+recorder.record_and_save(record_keys=True)    # Record clicks and key presses
+```
+
+#### Inspecting a recording
+
+```python
+recorder = Recorder(record=False, filename='my_clicks.csv')
+recorder.print_events()
+```
+
+Output:
+
+```
+click(960, 540, left)
+sleep(2.00)
+click(300, 400, right)
+sleep(1.00)
+Key(esc)
 ```
 
 #### Playback
@@ -223,6 +245,8 @@ recorder.reproduce(
 )
 ```
 
+During playback, key events are replayed at the correct timing using `press_key()`.
+
 #### `__init__` parameters
 
 | Parameter | Type | Default | Description |
@@ -230,6 +254,12 @@ recorder.reproduce(
 | `record` | `bool` | `False` | `True` to record, `False` to load and replay |
 | `filename` | `str` | `'mouse_record.csv'` | CSV file to save to or load from |
 | `stop_key` | `keyboard.Key` | `keyboard.Key.ctrl_l` | Key that stops the recording |
+
+#### `record_and_save()` parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `record_keys` | `bool` | `False` | When `True`, key presses are recorded alongside mouse clicks |
 
 #### `reproduce()` parameters
 
@@ -241,6 +271,10 @@ recorder.reproduce(
 | `move_fraction` | `float` | `0.6` | Fraction of each inter-event gap used for cursor movement (0.0-1.0). At 0.6 the cursor moves for 60% of the gap and idles for 40%. |
 | `strict_timing` | `bool` | `True` | When `True`, if a movement overshoots its time budget the next move duration is shortened to stay on schedule. When `False`, overshoots are ignored and the sequence may drift. |
 | `verbose` | `bool` | `True` | Print actual/average/original timing per iteration |
+
+#### `print_events()`
+
+Prints the recorded sequence as readable event/sleep pairs. No parameters.
 
 ---
 
