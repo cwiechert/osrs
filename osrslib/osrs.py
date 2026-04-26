@@ -703,11 +703,18 @@ class Recorder:
     """
     _CSV_FIELDS = ("timestamps", "x_axis", "y_axis", "button", "event_type", "key")
 
+    # Normalize pynput variant names to the canonical _SCAN_CODES key.
+    _KEY_ALIASES: dict = {
+        "ctrl_l": "ctrl", "ctrl_r": "ctrl",
+        "shift_l": "shift", "shift_r": "shift", "shift": "shift",
+        "alt_l": "alt", "alt_r": "alt", "alt": "alt",
+    }
+
     def __init__(
         self,
         record: bool = False,
         filename: str = "mouse_record.csv",
-        stop_key: keyboard.Key = keyboard.Key.ctrl_l,
+        stop_key: Union[keyboard.Key, str] = keyboard.Key.esc,
     ):
         self.record = record
         self.filename = filename
@@ -769,6 +776,15 @@ class Recorder:
                     }
                 )
 
+    def _key_matches(self, key) -> bool:
+        """Returns True when *key* equals the configured stop_key."""
+        if isinstance(self.stop_key, keyboard.Key):
+            return key == self.stop_key
+        try:
+            return key.char == self.stop_key
+        except AttributeError:
+            return key.name == self.stop_key
+
     # ── Recording ────────────────────────────────────────────────────────
     def _on_click(self, x: int, y: int, button, pressed: bool) -> None:
         """Mouse listener callback - appends events while recording."""
@@ -784,19 +800,20 @@ class Recorder:
 
     def _on_press(self, key) -> Optional[bool]:
         """Keyboard listener callback - returns ``False`` to stop."""
-        if key == self.stop_key:
+        if self._key_matches(key):
             return False
         return None
 
     def _on_press_record(self, key) -> Optional[bool]:
         """Keyboard listener callback that records key presses and stops on stop_key."""
-        if key == self.stop_key:
+        if self._key_matches(key):
             return False
 
         try:
             key_name = key.char  # alphanumeric keys
         except AttributeError:
-            key_name = key.name  # special keys (shift, ctrl, etc.)
+            raw = key.name  # special keys (shift, ctrl, etc.)
+            key_name = self._KEY_ALIASES.get(raw, raw)
 
         if key_name:
             self.events.append(
